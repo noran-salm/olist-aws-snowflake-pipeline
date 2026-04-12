@@ -1,0 +1,55 @@
+name: 'dbt_olist'
+version: '1.0.0'
+config-version: 2
+
+profile: 'dbt_olist'
+
+model-paths:    ["models"]
+analysis-paths: ["analyses"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path:    "target"
+clean-targets:  ["target", "dbt_packages"]
+
+# ─── Model Configurations ───────────────────────────────────────────────────
+
+models:
+  dbt_olist:
+
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ["staging"]
+
+    marts:
+      +materialized: table
+      +schema: marts
+      +tags: ["marts"]
+      +post-hook:
+        - "GRANT SELECT ON {{ this }} TO ROLE REPORTER"
+
+# ─── Vars ───────────────────────────────────────────────────────────────────
+
+vars:
+  # Set to a date string (YYYY-MM-DD) to limit backfill in development
+  start_date: '2016-01-01'
+  # Snowflake raw schema
+  raw_schema: 'RAW'
+
+# ─── On-run-start / end hooks ───────────────────────────────────────────────
+
+on-run-start:
+  - "USE WAREHOUSE OLIST_WH"
+
+on-run-end:
+  - "{{ log('dbt run complete. Models materialized: ' ~ results | length, info=True) }}"
+
+# ─── Quoting ────────────────────────────────────────────────────────────────
+
+quoting:
+  database: false
+  schema:   false
+  identifier: false

@@ -1,0 +1,7 @@
+# Lambda runtime is Python 3.12.
+# boto3 is pre-installed in the Lambda environment – list it only for local dev.
+boto3>=1.34.0
+botocore>=1.34.0
+
+# requests is NOT in the Lambda runtime; include if you switch from urllib.
+# requests>=2.31.0

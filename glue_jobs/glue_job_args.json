@@ -1,0 +1,14 @@
+{
+  "--JOB_NAME": "olist-etl-job",
+  "--SOURCE_BUCKET": "olist-lake-<YOUR_ACCOUNT_ID>",
+  "--SOURCE_PREFIX": "raw/",
+  "--TARGET_PREFIX": "processed/",
+  "--DATABASE_NAME": "olist_raw_db",
+  "--job-language": "python",
+  "--enable-metrics": "",
+  "--enable-spark-ui": "true",
+  "--spark-event-logs-path": "s3://olist-lake-<YOUR_ACCOUNT_ID>/spark-logs/",
+  "--enable-continuous-cloudwatch-log": "true",
+  "--TempDir": "s3://olist-lake-<YOUR_ACCOUNT_ID>/glue-temp/",
+  "--job-bookmark-option": "job-bookmark-disable"
+}

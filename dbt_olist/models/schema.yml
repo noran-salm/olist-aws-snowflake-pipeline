@@ -1,0 +1,148 @@
+version: 2
+
+# ─── Sources ──────────────────────────────────────────────────────────────────
+
+sources:
+  - name: olist_raw
+    description: "Raw tables landed by Snowpipe from S3 processed/ prefix"
+    database: OLIST_DW
+    schema: RAW
+    tables:
+      - name: fct_orders
+        description: "Order-item level fact table ingested via Snowpipe"
+        columns:
+          - name: order_id
+            tests: [not_null]
+          - name: order_item_id
+            tests: [not_null]
+          - name: customer_id
+            tests: [not_null]
+          - name: product_id
+            tests: [not_null]
+          - name: seller_id
+            tests: [not_null]
+
+      - name: dim_customers
+        description: "Customer dimension from Glue ETL"
+        columns:
+          - name: customer_id
+            tests: [not_null, unique]
+
+      - name: dim_products
+        description: "Product dimension from Glue ETL"
+        columns:
+          - name: product_id
+            tests: [not_null, unique]
+
+      - name: dim_sellers
+        description: "Seller dimension from Glue ETL"
+        columns:
+          - name: seller_id
+            tests: [not_null, unique]
+
+# ─── Staging Models ───────────────────────────────────────────────────────────
+
+models:
+  - name: stg_orders
+    description: "Staging view over raw fct_orders – light cleaning and renaming only"
+    columns:
+      - name: order_id
+        description: "Unique order identifier"
+        tests: [not_null]
+      - name: order_item_id
+        description: "Line number within the order (1-indexed)"
+        tests: [not_null]
+      - name: order_status
+        description: "Lifecycle status of the order"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['delivered', 'shipped', 'processing', 'canceled',
+                       'unavailable', 'invoiced', 'approved', 'created']
+      - name: item_price
+        tests: [not_null]
+      - name: order_item_revenue
+        tests: [not_null]
+
+  - name: stg_customers
+    description: "Staging view over raw dim_customers"
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+
+  - name: stg_products
+    description: "Staging view over raw dim_products with derived volumetric weight"
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+
+  - name: stg_sellers
+    description: "Staging view over raw dim_sellers"
+    columns:
+      - name: seller_id
+        tests: [not_null, unique]
+
+# ─── Mart Models ──────────────────────────────────────────────────────────────
+
+  - name: dim_customers
+    description: "Customer dimension enriched with LTV and order aggregates"
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: customer_segment
+        tests:
+          - accepted_values:
+              values: ['high_value', 'mid_value', 'low_value']
+      - name: total_orders
+        tests: [not_null]
+      - name: lifetime_revenue
+        tests: [not_null]
+
+  - name: dim_products
+    description: "Product dimension enriched with sales performance KPIs"
+    columns:
+      - name: product_id
+        tests: [not_null, unique]
+      - name: revenue_tier
+        tests:
+          - accepted_values:
+              values: ['top', 'mid', 'tail']
+
+  - name: dim_sellers
+    description: "Seller dimension enriched with GMV and delivery KPIs"
+    columns:
+      - name: seller_id
+        tests: [not_null, unique]
+      - name: seller_tier
+        tests:
+          - accepted_values:
+              values: ['platinum', 'gold', 'silver', 'bronze']
+      - name: late_delivery_rate_pct
+        tests: [not_null]
+
+  - name: fct_orders
+    description: >
+      Central fact table at order-item grain.
+      Denormalized with dimension attributes for fast dashboard queries.
+    columns:
+      - name: order_id
+        tests: [not_null]
+      - name: order_item_id
+        tests: [not_null]
+      - name: customer_id
+        tests: [not_null]
+      - name: product_id
+        tests: [not_null]
+      - name: seller_id
+        tests: [not_null]
+      - name: item_price
+        description: "Price of a single item in BRL"
+        tests: [not_null]
+      - name: order_item_revenue
+        description: "item_price + freight_value"
+        tests: [not_null]
+      - name: order_status
+        tests:
+          - accepted_values:
+              values: ['delivered', 'shipped', 'processing', 'canceled',
+                       'unavailable', 'invoiced', 'approved', 'created']

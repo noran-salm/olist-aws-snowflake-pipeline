@@ -1,0 +1,61 @@
+# ── Secrets & credentials ────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+*.p12
+credentials
+.aws/
+
+# ── Terraform ────────────────────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfvars          # put secrets here, never commit
+*.tfplan
+override.tf
+override.tf.json
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.whl
+.venv/
+venv/
+env/
+.Python
+
+# ── Lambda deployment packages ───────────────────────────────────────────────
+lambda_function/lambda_package.zip
+lambda_function/__pycache__/
+
+# ── dbt ──────────────────────────────────────────────────────────────────────
+dbt_olist/target/
+dbt_olist/dbt_packages/
+dbt_olist/logs/
+dbt_olist/.user.yml
+
+# ── Streamlit ────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml   # contains Snowflake credentials
+
+# ── OS / Editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+*.swp
+*.swo
+.idea/
+
+# ── Jupyter (if used for exploration) ────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Logs & temp ──────────────────────────────────────────────────────────────
+*.log
+tmp/
+temp/
+dashboard/.streamlit/secrets.toml
