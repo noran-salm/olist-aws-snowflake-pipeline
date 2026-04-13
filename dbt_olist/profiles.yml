@@ -3,13 +3,13 @@ dbt_olist:
   outputs:
     dev:
       type: snowflake
-      account:   "NZFSGYT-PU98877"
-      user:      "NORANSALM15"
-      password:  "{{ env_var('SNOWFLAKE_PASSWORD') }}"
-      role:      "SYSADMIN"
-      database:  "OLIST_DW"
+      account: "NZFSGYT-PU98877"
+      user: "NORANSALM15"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "SYSADMIN"
+      database: "OLIST_DW"
       warehouse: "OLIST_WH"
-      schema:    "STAGING"
-      threads:   4
+      schema: "STAGING"
+      threads: 4
       client_session_keep_alive: false
       query_tag: "dbt_olist_dev"

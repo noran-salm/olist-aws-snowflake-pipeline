@@ -1,7 +1,8 @@
 """
-olist_etl_script.py — Reads directly from S3 (bypasses catalog column name issue)
-All Glue-crawled tables had unnamed columns (col0, col1...) because the crawler
-did not detect headers. Reading with spark.read.csv header=True fixes this cleanly.
+olist_etl_script.py — Incremental version
+- dim tables: overwrite (they are small, always full refresh)
+- fct_orders: APPEND mode (only new partitions added)
+- Job bookmarks track which S3 files were already processed
 """
 import sys
 from awsglue.context import GlueContext
@@ -20,7 +21,7 @@ sc       = SparkContext()
 glue_ctx = GlueContext(sc)
 spark    = glue_ctx.spark_session
 job      = Job(glue_ctx)
-job.init(args["JOB_NAME"], args)
+job.init(args["JOB_NAME"], args)   # bookmark state loaded here
 
 BUCKET   = args["SOURCE_BUCKET"]
 RAW      = f"s3://{BUCKET}/{args['SOURCE_PREFIX']}"
@@ -30,18 +31,15 @@ spark.conf.set("spark.sql.legacy.timeParserPolicy", "LEGACY")
 spark.conf.set("spark.sql.parquet.compression.codec", "snappy")
 
 
-# ── Read directly from S3 with proper headers ─────────────────────────────────
-
 def read_csv(filename: str) -> DataFrame:
-    path = f"{RAW}{filename}"
     df = (spark.read
           .option("header", "true")
-          .option("inferSchema", "false")   # keep everything as string first
+          .option("inferSchema", "false")
           .option("quote", '"')
           .option("escape", '"')
           .option("multiLine", "true")
-          .csv(path))
-    print(f"[INFO] {filename}: {df.count()} rows | cols: {df.columns}")
+          .csv(f"{RAW}{filename}"))
+    print(f"[INFO] {filename}: {df.count()} rows")
     return df
 
 def clean(df: DataFrame) -> DataFrame:
@@ -51,18 +49,26 @@ def clean(df: DataFrame) -> DataFrame:
             df = df.withColumn(col, F.trim(F.col(col)))
     return df
 
-def write_parquet(df: DataFrame, name: str, partition_cols=None):
+def write_parquet(df: DataFrame, name: str,
+                  mode: str = "overwrite", partition_cols=None):
+    """
+    mode = 'overwrite' for dims (small, always fresh)
+    mode = 'append'    for fct_orders (incremental, partition-safe)
+    """
     path = f"{OUT_BASE}{name}/"
-    w = df.write.mode("overwrite").format("parquet")
+    w = df.write.mode(mode).format("parquet")
     if partition_cols:
+        # partitionOverwriteMode=dynamic ensures we only overwrite
+        # the specific month partitions that appear in this batch
+        spark.conf.set(
+            "spark.sql.sources.partitionOverwriteMode", "dynamic"
+        )
         w = w.partitionBy(*partition_cols)
     w.save(path)
-    print(f"[INFO] Written → {path}")
+    print(f"[INFO] Written ({mode}) → {path}")
 
 
-# ── Load all source CSVs ──────────────────────────────────────────────────────
-
-print("[INFO] Loading CSVs from S3...")
+# ── Load sources ──────────────────────────────────────────────
 orders_df      = clean(read_csv("olist_orders_dataset.csv"))
 order_items_df = clean(read_csv("olist_order_items_dataset.csv"))
 customers_df   = clean(read_csv("olist_customers_dataset.csv"))
@@ -72,48 +78,26 @@ payments_df    = clean(read_csv("olist_order_payments_dataset.csv"))
 reviews_df     = clean(read_csv("olist_order_reviews_dataset.csv"))
 category_df    = clean(read_csv("product_category_name_translation.csv"))
 
-# Sanity-check columns loaded correctly
-print(f"[CHECK] orders cols:      {orders_df.columns}")
-print(f"[CHECK] order_items cols: {order_items_df.columns}")
-print(f"[CHECK] category cols:    {category_df.columns}")
+# ── Dims: always overwrite (small reference tables) ───────────
+print("[INFO] Building dims (overwrite)...")
 
+dim_customers = (customers_df.select(
+    F.col("customer_id"),
+    F.col("customer_unique_id"),
+    F.col("customer_zip_code_prefix").cast("string").alias("zip_code_prefix"),
+    F.col("customer_city").alias("city"),
+    F.col("customer_state").alias("state"),
+).dropDuplicates(["customer_id"])
+ .withColumn("dbt_updated_at", F.current_timestamp()))
+write_parquet(dim_customers, "dim_customers", mode="overwrite")
 
-# ── dim_customers ─────────────────────────────────────────────────────────────
-
-print("[INFO] Building dim_customers...")
-dim_customers = (
-    customers_df
-    .select(
-        F.col("customer_id"),
-        F.col("customer_unique_id"),
-        F.col("customer_zip_code_prefix").cast("string").alias("zip_code_prefix"),
-        F.col("customer_city").alias("city"),
-        F.col("customer_state").alias("state"),
-    )
-    .dropDuplicates(["customer_id"])
-    .withColumn("dbt_updated_at", F.current_timestamp())
-)
-write_parquet(dim_customers, "dim_customers")
-
-
-# ── dim_products ──────────────────────────────────────────────────────────────
-
-print("[INFO] Building dim_products...")
-dim_products = (
-    products_df
+dim_products = (products_df
     .join(category_df, on="product_category_name", how="left")
-    .withColumn(
-        "category",
-        F.coalesce(
-            F.col("product_category_name_english"),
-            F.col("product_category_name"),
-            F.lit("unknown")
-        )
-    )
-    .withColumn(
-        "product_weight_kg",
-        F.round(F.col("product_weight_g").cast(DoubleType()) / 1000, 3)
-    )
+    .withColumn("category",
+        F.coalesce(F.col("product_category_name_english"),
+                   F.col("product_category_name"), F.lit("unknown")))
+    .withColumn("product_weight_kg",
+        F.round(F.col("product_weight_g").cast(DoubleType()) / 1000, 3))
     .select(
         F.col("product_id"),
         F.col("category"),
@@ -128,47 +112,30 @@ dim_products = (
     .dropDuplicates(["product_id"])
     .fillna({"category": "unknown", "name_length": 0,
              "description_length": 0, "photos_qty": 0})
-    .withColumn("dbt_updated_at", F.current_timestamp())
-)
-write_parquet(dim_products, "dim_products")
+    .withColumn("dbt_updated_at", F.current_timestamp()))
+write_parquet(dim_products, "dim_products", mode="overwrite")
 
+dim_sellers = (sellers_df.select(
+    F.col("seller_id"),
+    F.col("seller_zip_code_prefix").cast("string").alias("zip_code_prefix"),
+    F.col("seller_city").alias("city"),
+    F.col("seller_state").alias("state"),
+).dropDuplicates(["seller_id"])
+ .withColumn("dbt_updated_at", F.current_timestamp()))
+write_parquet(dim_sellers, "dim_sellers", mode="overwrite")
 
-# ── dim_sellers ───────────────────────────────────────────────────────────────
+# ── fct_orders: APPEND new month partitions only ──────────────
+print("[INFO] Building fct_orders (incremental append)...")
 
-print("[INFO] Building dim_sellers...")
-dim_sellers = (
-    sellers_df
-    .select(
-        F.col("seller_id"),
-        F.col("seller_zip_code_prefix").cast("string").alias("zip_code_prefix"),
-        F.col("seller_city").alias("city"),
-        F.col("seller_state").alias("state"),
-    )
-    .dropDuplicates(["seller_id"])
-    .withColumn("dbt_updated_at", F.current_timestamp())
-)
-write_parquet(dim_sellers, "dim_sellers")
+payments_agg = (payments_df.groupBy("order_id").agg(
+    F.sum(F.col("payment_value").cast(DoubleType())).alias("total_payment_value"),
+    F.max(F.col("payment_installments").cast(IntegerType())).alias("max_installments"),
+    F.collect_set("payment_type").alias("payment_types"),
+))
 
-
-# ── fct_orders ────────────────────────────────────────────────────────────────
-
-print("[INFO] Building fct_orders...")
-
-payments_agg = (
-    payments_df
-    .groupBy("order_id")
-    .agg(
-        F.sum(F.col("payment_value").cast(DoubleType())).alias("total_payment_value"),
-        F.max(F.col("payment_installments").cast(IntegerType())).alias("max_installments"),
-        F.collect_set("payment_type").alias("payment_types"),
-    )
-)
-
-reviews_agg = (
-    reviews_df
-    .groupBy("order_id")
-    .agg(F.avg(F.col("review_score").cast(DoubleType())).alias("avg_review_score"))
-)
+reviews_agg = (reviews_df.groupBy("order_id").agg(
+    F.avg(F.col("review_score").cast(DoubleType())).alias("avg_review_score")
+))
 
 fct_orders = (
     order_items_df
@@ -192,21 +159,16 @@ fct_orders = (
     .withColumn("order_item_revenue",
         F.col("price") + F.col("freight_value"))
     .withColumn("delivery_days",
-        F.datediff(
-            F.col("order_delivered_customer_date"),
-            F.col("order_purchase_timestamp")
-        ).cast(IntegerType()))
+        F.datediff(F.col("order_delivered_customer_date"),
+                   F.col("order_purchase_timestamp")).cast(IntegerType()))
     .withColumn("is_late_delivery",
-        F.when(
-            F.col("order_delivered_customer_date") >
-            F.col("order_estimated_delivery_date"), 1
-        ).otherwise(0))
+        F.when(F.col("order_delivered_customer_date") >
+               F.col("order_estimated_delivery_date"), 1).otherwise(0))
     .withColumn("order_year_month",
         F.date_format(F.col("order_purchase_timestamp"), "yyyy-MM"))
     .select(
         "order_id", "order_item_id", "customer_id", "seller_id", "product_id",
-        "order_status",
-        "order_purchase_timestamp", "order_approved_at",
+        "order_status", "order_purchase_timestamp", "order_approved_at",
         "order_delivered_carrier_date", "order_delivered_customer_date",
         "order_estimated_delivery_date", "shipping_limit_date",
         "price", "freight_value", "order_item_revenue",
@@ -216,7 +178,10 @@ fct_orders = (
     )
     .fillna({"avg_review_score": 0.0, "delivery_days": -1, "is_late_delivery": 0})
 )
-write_parquet(fct_orders, "fct_orders", partition_cols=["order_year_month"])
 
-print("[INFO] All tables written successfully. Committing job.")
-job.commit()
+# APPEND: only writes new month partitions, existing ones untouched
+write_parquet(fct_orders, "fct_orders",
+              mode="append", partition_cols=["order_year_month"])
+
+print("[INFO] All done. Committing job bookmark.")
+job.commit()   # bookmark saved — next run starts from here

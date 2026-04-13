@@ -1,0 +1,16 @@
+state_code,state_name,region
+SP,São Paulo,Southeast
+RJ,Rio de Janeiro,Southeast
+MG,Minas Gerais,Southeast
+RS,Rio Grande do Sul,South
+PR,Paraná,South
+SC,Santa Catarina,South
+BA,Bahia,Northeast
+PE,Pernambuco,Northeast
+CE,Ceará,Northeast
+GO,Goiás,Central-West
+DF,Distrito Federal,Central-West
+AM,Amazonas,North
+PA,Pará,North
+MA,Maranhão,Northeast
+ES,Espírito Santo,Southeast

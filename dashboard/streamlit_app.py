@@ -1,33 +1,58 @@
 """
 Olist E-commerce Analytics Dashboard
-Connects to Snowflake using externalbrowser (SSO) auth
+Credentials fetched from AWS Secrets Manager at runtime — zero plaintext.
 """
-import os
+import boto3
+import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import snowflake.connector
 
-# ── Page Config ───────────────────────────────────────────────
+# ── Page Config ────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Olist E-commerce Analytics",
-    page_icon="🛒",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    page_title  = "Olist E-commerce Analytics",
+    page_icon   = "🛒",
+    layout      = "wide",
+    initial_sidebar_state = "expanded",
 )
 
-# ── Snowflake Connection ───────────────────────────────────────
+# ── Credentials: Secrets Manager → fallback to st.secrets ──────
+@st.cache_resource(show_spinner="Loading credentials…")
+def get_credentials() -> dict:
+    """
+    Production: pulls from AWS Secrets Manager.
+    Local dev fallback: uses .streamlit/secrets.toml.
+    """
+    try:
+        client = boto3.client("secretsmanager", region_name="us-east-1")
+        response = client.get_secret_value(SecretId="olist/snowflake/credentials")
+        creds = json.loads(response["SecretString"])
+        st.sidebar.success("🔐 Credentials: AWS Secrets Manager")
+        return creds
+    except Exception:
+        # Fallback for local dev without AWS credentials
+        try:
+            creds = dict(st.secrets["snowflake"])
+            st.sidebar.info("🔑 Credentials: Local secrets.toml")
+            return creds
+        except Exception as e:
+            st.error(f"Could not load credentials: {e}")
+            st.stop()
+
+# ── Snowflake Connection ────────────────────────────────────────
 @st.cache_resource(show_spinner="Connecting to Snowflake…")
 def get_snowflake_connection():
+    creds = get_credentials()
     return snowflake.connector.connect(
-        account     = os.getenv("SNOWFLAKE_ACCOUNT", "NZFSGYT-PU98877"),   # or "NZFSGYT"
-        user        = os.getenv("SNOWFLAKE_USER", "NORANSALM15"),
-        password    = os.getenv("SNOWFLAKE_PASSWORD"),                     # ← required now
-        role        = os.getenv("SNOWFLAKE_ROLE", "SYSADMIN"),
-        database    = os.getenv("SNOWFLAKE_DATABASE", "OLIST_DW"),
-        schema      = os.getenv("SNOWFLAKE_SCHEMA", "MARTS"),
-        warehouse   = os.getenv("SNOWFLAKE_WAREHOUSE", "OLIST_WH"),
+        account   = creds["account"],
+        user      = creds["user"],
+        password  = creds["password"],
+        role      = creds.get("role",      "SYSADMIN"),
+        database  = creds.get("database",  "OLIST_DW"),
+        schema    = creds.get("schema",    "MARTS"),
+        warehouse = creds.get("warehouse", "OLIST_WH"),
     )
 
 @st.cache_data(ttl=600, show_spinner="Fetching data…")
@@ -39,12 +64,13 @@ def run_query(sql: str) -> pd.DataFrame:
     df.columns = [c.lower() for c in df.columns]
     return df
 
-# ── Sidebar ───────────────────────────────────────────────────
+# ── Sidebar ─────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🛒 Olist Analytics")
     st.divider()
-    year_options = [2016, 2017, 2018]
-    selected_years = st.multiselect("Order Year", year_options, default=[2017, 2018])
+    year_options   = [2016, 2017, 2018]
+    selected_years = st.multiselect("Order Year", year_options,
+                                    default=[2017, 2018])
     top_n = st.slider("Top N Categories", 5, 20, 10)
     st.divider()
     if st.button("🔄 Clear Cache"):
@@ -57,55 +83,56 @@ year_clause = (
     if selected_years else "1=1"
 )
 
-# ── Header ────────────────────────────────────────────────────
+# ── Header ──────────────────────────────────────────────────────
 st.title("🛒 Olist E-commerce Analytics")
 st.caption("Pipeline: AWS Lambda → S3 → Glue ETL → Snowflake → dbt → Streamlit")
 st.divider()
 
-# ── KPI Cards ─────────────────────────────────────────────────
+# ── KPI Cards ───────────────────────────────────────────────────
 kpi_sql = f"""
 SELECT
-    COUNT(DISTINCT order_id)                                    AS total_orders,
-    COUNT(*)                                                    AS total_items,
-    ROUND(SUM(order_item_revenue), 2)                          AS total_gmv,
-    ROUND(AVG(avg_review_score), 2)                            AS avg_review,
-    ROUND(AVG(delivery_days), 1)                               AS avg_days,
-    ROUND(100.0 * COUNT_IF(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
+    COUNT(DISTINCT order_id)                                      AS total_orders,
+    COUNT(*)                                                      AS total_items,
+    ROUND(SUM(order_item_revenue), 2)                            AS total_gmv,
+    ROUND(AVG(avg_review_score), 2)                              AS avg_review,
+    ROUND(AVG(delivery_days), 1)                                 AS avg_days,
+    ROUND(100.0 * SUM(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
 FROM OLIST_DW.MARTS.fct_orders
 WHERE {year_clause}
 """
 kpi = run_query(kpi_sql)
 
 if not kpi.empty:
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("📦 Orders",        f"{int(kpi['total_orders'][0]):,}")
-    c2.metric("🛍️ Items Sold",     f"{int(kpi['total_items'][0]):,}")
-    c3.metric("💰 GMV (BRL)",      f"R$ {kpi['total_gmv'][0]:,.0f}")
-    c4.metric("⭐ Avg Review",     f"{kpi['avg_review'][0]} / 5")
-    c5.metric("🚚 Avg Delivery",   f"{kpi['avg_days'][0]} days")
-    c6.metric("⏰ Late Rate",      f"{kpi['late_pct'][0]}%")
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    c1.metric("📦 Orders",      f"{int(kpi['total_orders'][0]):,}")
+    c2.metric("🛍️ Items Sold",  f"{int(kpi['total_items'][0]):,}")
+    c3.metric("💰 GMV (BRL)",   f"R$ {kpi['total_gmv'][0]:,.0f}")
+    c4.metric("⭐ Avg Review",  f"{kpi['avg_review'][0]} / 5")
+    c5.metric("🚚 Avg Delivery",f"{kpi['avg_days'][0]} days")
+    c6.metric("⏰ Late Rate",   f"{kpi['late_pct'][0]}%")
 
 st.divider()
 
-# ── Row 1: Revenue Trend + Top Categories ─────────────────────
+# ── Row 1: Revenue Trend + Top Categories ──────────────────────
 col1, col2 = st.columns([3, 2])
 
 with col1:
     st.subheader("📈 Monthly Revenue (BRL)")
     rev_sql = f"""
     SELECT
-        DATE_TRUNC('month', order_purchase_timestamp)::DATE AS month,
-        ROUND(SUM(order_item_revenue), 2)                   AS revenue,
-        COUNT(DISTINCT order_id)                            AS orders
-    FROM OLIST_DW.MARTS.fct_orders
-    WHERE {year_clause}
+        order_year_month,
+        SUM(revenue_brl)    AS revenue,
+        SUM(total_orders)   AS orders
+    FROM OLIST_DW.MARTS.fct_monthly_revenue
+    WHERE YEAR(TO_DATE(order_year_month || '-01')) IN
+          ({','.join(str(y) for y in selected_years) if selected_years else '2017,2018'})
     GROUP BY 1 ORDER BY 1
     """
     rev_df = run_query(rev_sql)
     if not rev_df.empty:
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=rev_df["month"], y=rev_df["revenue"],
+            x=rev_df["order_year_month"], y=rev_df["revenue"],
             mode="lines+markers",
             line=dict(color="#FF6B35", width=2.5),
             fill="tozeroy",
@@ -115,7 +142,7 @@ with col1:
         fig.update_layout(
             xaxis_title="Month", yaxis_title="Revenue (BRL)",
             hovermode="x unified",
-            margin=dict(l=0, r=0, t=10, b=0), height=320
+            margin=dict(l=0,r=0,t=10,b=0), height=320
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -123,10 +150,11 @@ with col2:
     st.subheader(f"🏆 Top {top_n} Categories")
     cat_sql = f"""
     SELECT
-        COALESCE(product_category, 'unknown') AS category,
-        ROUND(SUM(order_item_revenue), 2)     AS revenue
-    FROM OLIST_DW.MARTS.fct_orders
-    WHERE {year_clause}
+        COALESCE(product_category,'unknown') AS category,
+        ROUND(SUM(revenue_brl), 2)           AS revenue
+    FROM OLIST_DW.MARTS.fct_monthly_revenue
+    WHERE YEAR(TO_DATE(order_year_month || '-01')) IN
+          ({','.join(str(y) for y in selected_years) if selected_years else '2017,2018'})
     GROUP BY 1 ORDER BY revenue DESC
     LIMIT {top_n}
     """
@@ -139,14 +167,14 @@ with col2:
         )
         fig2.update_layout(
             coloraxis_showscale=False,
-            margin=dict(l=0, r=0, t=10, b=0), height=320
+            margin=dict(l=0,r=0,t=10,b=0), height=320
         )
         fig2.update_yaxes(autorange="reversed")
         st.plotly_chart(fig2, use_container_width=True)
 
 st.divider()
 
-# ── Row 2: Order Status Pie + Seller Table ────────────────────
+# ── Row 2: Status Pie + Seller Table ───────────────────────────
 col3, col4 = st.columns([1, 2])
 
 with col3:
@@ -177,16 +205,16 @@ with col4:
     seller_sql = f"""
     SELECT
         f.seller_id,
-        s.state                                              AS state,
-        s.seller_tier                                        AS tier,
-        COUNT(DISTINCT f.order_id)                           AS orders,
-        ROUND(SUM(f.order_item_revenue), 2)                 AS gmv,
-        ROUND(AVG(f.avg_review_score), 2)                   AS score,
-        ROUND(AVG(f.delivery_days), 1)                      AS avg_days
+        s.state                               AS state,
+        s.seller_tier                         AS tier,
+        COUNT(DISTINCT f.order_id)            AS orders,
+        ROUND(SUM(f.order_item_revenue), 2)   AS gmv,
+        ROUND(AVG(f.avg_review_score), 2)     AS score,
+        ROUND(AVG(f.delivery_days), 1)        AS avg_days
     FROM OLIST_DW.MARTS.fct_orders f
     JOIN OLIST_DW.MARTS.dim_sellers s ON f.seller_id = s.seller_id
     WHERE {year_clause}
-    GROUP BY 1, 2, 3
+    GROUP BY 1,2,3
     ORDER BY gmv DESC
     LIMIT 15
     """
@@ -196,14 +224,56 @@ with col4:
         seller_df["tier"] = seller_df["tier"].map(
             lambda t: f"{tier_icon.get(t,'')} {t.title()}" if t else "—"
         )
-        seller_df.columns = ["Seller ID","State","Tier","Orders","GMV (BRL)","Score","Avg Days"]
+        seller_df.columns = ["Seller ID","State","Tier",
+                              "Orders","GMV (BRL)","Score","Avg Days"]
         st.dataframe(seller_df, use_container_width=True, height=320)
 
 st.divider()
 
-# ── Raw Data Explorer ──────────────────────────────────────────
+# ── Revenue by Region ───────────────────────────────────────────
+st.subheader("🗺️ Revenue by Brazilian Region")
+region_sql = f"""
+SELECT
+    customer_region                    AS region,
+    customer_state                     AS state,
+    ROUND(SUM(revenue_brl), 0)        AS revenue,
+    SUM(total_orders)                 AS orders
+FROM OLIST_DW.MARTS.fct_monthly_revenue
+WHERE customer_region IS NOT NULL
+  AND YEAR(TO_DATE(order_year_month || '-01')) IN
+      ({','.join(str(y) for y in selected_years) if selected_years else '2017,2018'})
+GROUP BY 1, 2
+ORDER BY revenue DESC
+"""
+region_df = run_query(region_sql)
+if not region_df.empty:
+    col_r1, col_r2 = st.columns([2, 1])
+    with col_r1:
+        fig4 = px.bar(
+            region_df.groupby("region")["revenue"].sum().reset_index(),
+            x="region", y="revenue",
+            color="revenue", color_continuous_scale="Oranges",
+            labels={"revenue": "Revenue (BRL)", "region": "Region"}
+        )
+        fig4.update_layout(
+            coloraxis_showscale=False,
+            margin=dict(l=0,r=0,t=10,b=0), height=300
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+    with col_r2:
+        st.dataframe(
+            region_df[["state","region","revenue","orders"]]
+            .rename(columns={"revenue":"Revenue (BRL)","orders":"Orders",
+                             "state":"State","region":"Region"}),
+            use_container_width=True, height=300
+        )
+
+# ── Raw Data Explorer ───────────────────────────────────────────
 with st.expander("🔍 Raw Data Explorer"):
-    tbl = st.selectbox("Table", ["fct_orders","dim_customers","dim_products","dim_sellers"])
+    tbl = st.selectbox("Table", [
+        "fct_orders", "fct_monthly_revenue",
+        "dim_customers", "dim_products", "dim_sellers"
+    ])
     raw_df = run_query(f"SELECT * FROM OLIST_DW.MARTS.{tbl} LIMIT 500")
     st.dataframe(raw_df, use_container_width=True)
     st.download_button(
@@ -212,4 +282,4 @@ with st.expander("🔍 Raw Data Explorer"):
         file_name=f"{tbl}.csv", mime="text/csv"
     )
 
-st.caption("© Olist Analytics · AWS + Snowflake + dbt + Streamlit")
+st.caption("© Olist Analytics · AWS + Snowflake + dbt + Streamlit | 🔐 Secured by AWS Secrets Manager")

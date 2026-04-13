@@ -61,3 +61,12 @@ temp/
 dashboard/.streamlit/secrets.toml
 dashboard/.venv/
 dashboard/.streamlit/secrets.toml
+
+# Security — never commit these
+.env
+*.env
+dashboard/.streamlit/secrets.toml
+scripts/get_secret.py   # contains no secrets but good practice
+terraform/terraform.tfvars
+**/*.pem
+**/*.key

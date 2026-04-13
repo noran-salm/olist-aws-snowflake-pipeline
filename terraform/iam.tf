@@ -243,3 +243,25 @@ resource "aws_iam_role_policy" "snowflake_s3" {
   role   = aws_iam_role.snowflake_s3_role.id
   policy = data.aws_iam_policy_document.snowflake_s3_policy.json
 }
+
+# Patch: Add processed/ write access that was missing from original policy
+resource "aws_iam_role_policy" "glue_s3_processed" {
+  name = "olist-glue-processed-write"
+  role = aws_iam_role.glue_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "WriteProcessed"
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:GetObject"
+      ]
+      Resource = [
+        "arn:aws:s3:::olist-lake-516671521715/processed/*",
+        "arn:aws:s3:::olist-lake-516671521715/processed_*"
+      ]
+    }]
+  })
+}

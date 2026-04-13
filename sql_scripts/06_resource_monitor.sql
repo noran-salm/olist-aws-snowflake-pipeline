@@ -1,0 +1,19 @@
+USE ROLE ACCOUNTADMIN;
+
+-- Kill warehouse if idle > 1 min (already set) — confirm
+ALTER WAREHOUSE OLIST_WH SET AUTO_SUSPEND = 60;
+
+-- Add a spending cap: alert at $10, suspend at $20
+CREATE OR REPLACE RESOURCE MONITOR olist_budget
+    WITH CREDIT_QUOTA = 20
+    TRIGGERS
+        ON 50  PERCENT DO NOTIFY
+        ON 90  PERCENT DO NOTIFY
+        ON 100 PERCENT DO SUSPEND;
+
+ALTER WAREHOUSE OLIST_WH SET RESOURCE_MONITOR = olist_budget;
+
+
+-- Verify both settings applied
+SHOW WAREHOUSES LIKE 'OLIST_WH';
+SHOW RESOURCE MONITORS LIKE 'OLIST_BUDGET';

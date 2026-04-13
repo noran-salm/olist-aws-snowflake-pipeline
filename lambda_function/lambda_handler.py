@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import subprocess
 from typing import Any
 import boto3
 from botocore.exceptions import ClientError
@@ -11,6 +12,7 @@ S3_BUCKET    = os.environ["S3_BUCKET"]
 S3_PREFIX    = os.environ.get("S3_RAW_PREFIX", "raw/").rstrip("/") + "/"
 GLUE_CRAWLER = os.environ.get("GLUE_CRAWLER", "olist-raw-crawler")
 GLUE_JOB     = os.environ.get("GLUE_ETL_JOB", "olist-etl-job")
+DBT_PROJECT_DIR = "/var/task/dbt_olist"   # must be included in Lambda deployment
 
 EXPECTED_FILES = [
     "olist_customers_dataset.csv",
@@ -33,6 +35,7 @@ logger = logging.getLogger("olist-ingestion")
 s3   = boto3.client("s3")
 glue = boto3.client("glue")
 
+
 def list_raw_files() -> set:
     paginator = s3.get_paginator("list_objects_v2")
     keys = set()
@@ -43,18 +46,20 @@ def list_raw_files() -> set:
                 keys.add(key.split("/")[-1])
     return keys
 
+
 def validate_files() -> dict:
-    present  = list_raw_files()
+    present = list_raw_files()
     expected = set(EXPECTED_FILES)
-    missing  = expected - present
+    missing = expected - present
     logger.info("S3 raw/ has %d CSVs. Expected: %d.", len(present), len(expected))
     if missing:
         logger.warning("Missing: %s", missing)
     return {
-        "present":     sorted(present),
-        "missing":     sorted(missing),
+        "present": sorted(present),
+        "missing": sorted(missing),
         "all_present": len(missing) == 0,
     }
+
 
 def start_crawler() -> str:
     try:
@@ -64,6 +69,7 @@ def start_crawler() -> str:
     except glue.exceptions.CrawlerRunningException:
         logger.warning("Crawler already running.")
         return "ALREADY_RUNNING"
+
 
 def start_etl_job() -> str:
     resp = glue.start_job_run(
@@ -79,10 +85,11 @@ def start_etl_job() -> str:
     logger.info("ETL job started. RunId: %s", run_id)
     return run_id
 
+
 def wait_for_crawler(max_wait: int = 600) -> str:
     elapsed, interval = 0, 20
     while elapsed < max_wait:
-        resp  = glue.get_crawler(Name=GLUE_CRAWLER)
+        resp = glue.get_crawler(Name=GLUE_CRAWLER)
         state = resp["Crawler"]["State"]
         logger.info("Crawler state: %s (%ds)", state, elapsed)
         if state == "READY":
@@ -91,20 +98,46 @@ def wait_for_crawler(max_wait: int = 600) -> str:
         elapsed += interval
     return "TIMEOUT"
 
+
+def run_dbt() -> bool:
+    """Runs dbt run using the profiles and project bundled in Lambda."""
+    try:
+        # Set environment variables for dbt (Snowflake connection)
+        os.environ["SNOWFLAKE_ACCOUNT"] = os.environ.get("SNOWFLAKE_ACCOUNT", "")
+        os.environ["SNOWFLAKE_USER"] = os.environ.get("SNOWFLAKE_USER", "")
+        os.environ["SNOWFLAKE_PASSWORD"] = os.environ.get("SNOWFLAKE_PASSWORD", "")
+        os.environ["SNOWFLAKE_ROLE"] = os.environ.get("SNOWFLAKE_ROLE", "SYSADMIN")
+        os.environ["SNOWFLAKE_DATABASE"] = os.environ.get("SNOWFLAKE_DATABASE", "OLIST_DW")
+        os.environ["SNOWFLAKE_SCHEMA"] = os.environ.get("SNOWFLAKE_SCHEMA", "MARTS")
+        os.environ["SNOWFLAKE_WAREHOUSE"] = os.environ.get("SNOWFLAKE_WAREHOUSE", "OLIST_WH")
+
+        cmd = ["dbt", "run", "--profiles-dir", DBT_PROJECT_DIR, "--project-dir", DBT_PROJECT_DIR]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        logger.info("dbt stdout: %s", result.stdout)
+        if result.returncode != 0:
+            logger.error("dbt stderr: %s", result.stderr)
+            return False
+        return True
+    except Exception as e:
+        logger.exception("dbt execution failed: %s", e)
+        return False
+
+
 def handler(event: dict, context: Any) -> dict:
     logger.info("Event: %s", json.dumps(event))
 
     skip_crawler = event.get("skip_crawler", False)
-    start_etl    = event.get("start_etl", False)
+    start_etl = event.get("start_etl", False)
+    run_dbt_flag = event.get("run_dbt", False)   # new flag
     wait_crawler = event.get("wait_for_crawler", False)
-    result       = {"status": "success"}
+    result = {"status": "success"}
 
     try:
         file_status = validate_files()
         result["file_status"] = file_status
 
         if not file_status["all_present"]:
-            result["status"]  = "warning"
+            result["status"] = "warning"
             result["message"] = (
                 f"Missing {len(file_status['missing'])} file(s): "
                 f"{file_status['missing']}. Upload them to "
@@ -121,10 +154,13 @@ def handler(event: dict, context: Any) -> dict:
         if start_etl:
             result["etl_job_run_id"] = start_etl_job()
 
+        if run_dbt_flag:
+            result["dbt_success"] = run_dbt()
+
     except Exception as exc:
         logger.exception("Pipeline failed: %s", exc)
         result["status"] = "error"
-        result["error"]  = str(exc)
+        result["error"] = str(exc)
         raise
 
     logger.info("Result: %s", json.dumps(result, default=str))

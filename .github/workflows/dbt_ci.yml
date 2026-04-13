@@ -1,0 +1,44 @@
+name: dbt CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['dbt_olist/**']
+  pull_request:
+    paths: ['dbt_olist/**']
+
+jobs:
+  dbt-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dbt
+        run: pip install dbt-snowflake
+
+      - name: dbt debug
+        working-directory: dbt_olist
+        env:
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
+        run: dbt debug
+
+      - name: dbt run
+        working-directory: dbt_olist
+        env:
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
+        run: dbt run --full-refresh
+
+      - name: dbt test
+        working-directory: dbt_olist
+        env:
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
+        run: dbt test
