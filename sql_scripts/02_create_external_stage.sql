@@ -1,11 +1,17 @@
+cat > /mnt/d/Data-Engineering/Data-zoomcamp/Final-project/final_project_copy/olist-aws-snowflake-pipeline/sql_scripts/02_create_external_stage.sql << 'EOF'
+-- ============================================================
+-- 02_create_external_stage.sql
+-- Run as SYSADMIN after 01_create_storage_integration.sql
+-- Creates: warehouse, schemas, stage, tables, loads data
+-- ============================================================
+
 USE ROLE SYSADMIN;
 
 -- ── Database & Schemas ────────────────────────────────────────
 CREATE DATABASE IF NOT EXISTS OLIST_DW;
-
-CREATE SCHEMA IF NOT EXISTS OLIST_DW.RAW;
-CREATE SCHEMA IF NOT EXISTS OLIST_DW.STAGING;
-CREATE SCHEMA IF NOT EXISTS OLIST_DW.MARTS;
+CREATE SCHEMA  IF NOT EXISTS OLIST_DW.RAW;
+CREATE SCHEMA  IF NOT EXISTS OLIST_DW.STAGING;
+CREATE SCHEMA  IF NOT EXISTS OLIST_DW.MARTS;
 
 -- ── Warehouse ─────────────────────────────────────────────────
 CREATE WAREHOUSE IF NOT EXISTS OLIST_WH
@@ -15,13 +21,30 @@ CREATE WAREHOUSE IF NOT EXISTS OLIST_WH
     INITIALLY_SUSPENDED = TRUE
     COMMENT             = 'Olist pipeline warehouse';
 
-USE ROLE SYSADMIN;
 USE WAREHOUSE OLIST_WH;
-USE DATABASE OLIST_DW;
-USE SCHEMA RAW;
+USE DATABASE  OLIST_DW;
+USE SCHEMA    RAW;
 
--- ── Step 1: Create Tables ─────────────────────────────────────
+-- ── Stage (Direct Credentials — IAM user: olist-snowflake-s3-user) ───────────
+-- NOTE: Cross-account role assumption was replaced with direct IAM user keys
+-- because Snowflake's STS ExternalId handshake requires SQS setup.
+CREATE OR REPLACE STAGE OLIST_DW.RAW.olist_processed_stage
+    URL         = 's3://olist-lake-516671521715/processed/'
+    CREDENTIALS = (
+        AWS_KEY_ID     = '<YOUR_ACCESS_KEY_ID>'
+        AWS_SECRET_KEY = '<YOUR_SECRET_KEY>'
+    )
+    FILE_FORMAT = (
+        TYPE               = PARQUET
+        SNAPPY_COMPRESSION = TRUE
+        NULL_IF            = ('', 'null', 'NULL', 'None')
+    )
+    COMMENT = 'Points to Glue-processed Parquet files in S3';
 
+-- Verify stage can list files
+LIST @OLIST_DW.RAW.olist_processed_stage;
+
+-- ── Tables ────────────────────────────────────────────────────
 CREATE OR REPLACE TABLE OLIST_DW.RAW.dim_customers (
     customer_id         VARCHAR(50),
     customer_unique_id  VARCHAR(50),
@@ -74,14 +97,13 @@ CREATE OR REPLACE TABLE OLIST_DW.RAW.fct_orders (
     avg_review_score               FLOAT,
     delivery_days                  INTEGER,
     is_late_delivery               INTEGER,
-    order_year_month               VARCHAR(7)
+    order_year_month               VARCHAR(7)    -- derived from timestamp, not in Parquet
 )
 CLUSTER BY (order_year_month);
 
--- Confirm all 4 tables exist
 SHOW TABLES IN SCHEMA OLIST_DW.RAW;
 
--- ── Step 2: Load Data ─────────────────────────────────────────
+-- ── COPY INTO ─────────────────────────────────────────────────
 
 COPY INTO OLIST_DW.RAW.dim_customers
 FROM (
@@ -94,7 +116,7 @@ FROM (
         $1:dbt_updated_at::TIMESTAMP_NTZ
     FROM @OLIST_DW.RAW.olist_processed_stage/dim_customers/
 )
-FILE_FORMAT = (TYPE = PARQUET SNAPPY_COMPRESSION = TRUE);
+FILE_FORMAT = (TYPE=PARQUET SNAPPY_COMPRESSION=TRUE);
 
 COPY INTO OLIST_DW.RAW.dim_products
 FROM (
@@ -111,7 +133,7 @@ FROM (
         $1:dbt_updated_at::TIMESTAMP_NTZ
     FROM @OLIST_DW.RAW.olist_processed_stage/dim_products/
 )
-FILE_FORMAT = (TYPE = PARQUET SNAPPY_COMPRESSION = TRUE);
+FILE_FORMAT = (TYPE=PARQUET SNAPPY_COMPRESSION=TRUE);
 
 COPY INTO OLIST_DW.RAW.dim_sellers
 FROM (
@@ -123,13 +145,17 @@ FROM (
         $1:dbt_updated_at::TIMESTAMP_NTZ
     FROM @OLIST_DW.RAW.olist_processed_stage/dim_sellers/
 )
-FILE_FORMAT = (TYPE = PARQUET SNAPPY_COMPRESSION = TRUE);
+FILE_FORMAT = (TYPE=PARQUET SNAPPY_COMPRESSION=TRUE);
 
+-- !! KEY FIX: order_year_month is a Spark partition column →
+--    NOT stored inside the Parquet file.
+--    Derive it from order_purchase_timestamp during load.
+--    payment_types is an array → use TO_VARIANT, not PARSE_JSON.
 COPY INTO OLIST_DW.RAW.fct_orders
 FROM (
     SELECT
         $1:order_id::VARCHAR,
-        $1:order_item_id::INTEGER,
+        $1:order_item_id::VARCHAR,        -- loaded as VARCHAR, cast later in dbt
         $1:customer_id::VARCHAR,
         $1:seller_id::VARCHAR,
         $1:product_id::VARCHAR,
@@ -145,19 +171,25 @@ FROM (
         $1:order_item_revenue::FLOAT,
         $1:total_payment_value::FLOAT,
         $1:max_installments::INTEGER,
-        PARSE_JSON($1:payment_types::VARCHAR),
+        TO_VARIANT($1:payment_types),     -- array → VARIANT (not PARSE_JSON)
         $1:avg_review_score::FLOAT,
         $1:delivery_days::INTEGER,
         $1:is_late_delivery::INTEGER,
-        $1:order_year_month::VARCHAR
+        TO_VARCHAR(                       -- derive from timestamp, not from file
+            DATE_TRUNC('month', $1:order_purchase_timestamp::TIMESTAMP_NTZ),
+            'YYYY-MM'
+        )
     FROM @OLIST_DW.RAW.olist_processed_stage/fct_orders/
 )
-FILE_FORMAT = (TYPE = PARQUET SNAPPY_COMPRESSION = TRUE);
+FILE_FORMAT = (TYPE=PARQUET SNAPPY_COMPRESSION=TRUE)
+FORCE = TRUE;
 
--- ── Step 3: Verify Row Counts ─────────────────────────────────
-
-SELECT 'dim_customers' AS table_name, COUNT(*) AS raws FROM OLIST_DW.RAW.dim_customers
+-- ── Verify ────────────────────────────────────────────────────
+SELECT 'dim_customers' AS table_name, COUNT(*) AS rows FROM OLIST_DW.RAW.dim_customers
 UNION ALL SELECT 'dim_products',      COUNT(*) FROM OLIST_DW.RAW.dim_products
 UNION ALL SELECT 'dim_sellers',       COUNT(*) FROM OLIST_DW.RAW.dim_sellers
 UNION ALL SELECT 'fct_orders',        COUNT(*) FROM OLIST_DW.RAW.fct_orders
 ORDER BY table_name;
+EOF
+
+echo "02_create_external_stage.sql updated ✅"
