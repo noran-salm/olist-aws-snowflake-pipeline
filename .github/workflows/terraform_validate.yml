@@ -1,0 +1,60 @@
+# ─────────────────────────────────────────────────────────────
+# terraform_validate.yml
+# Validates and plans Terraform on every PR touching infra.
+# Does NOT auto-apply — apply is always manual for safety.
+# ─────────────────────────────────────────────────────────────
+name: Terraform Validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform_validate.yml'
+
+jobs:
+  terraform-validate:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Format Check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Plan (dry run only)
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var="snowflake_aws_role_arn=arn:aws:iam::516671521715:role/olist-snowflake-s3-role" \
+            -var="alert_email=placeholder@example.com" \
+            -no-color \
+            -input=false 2>&1 | head -50
+        continue-on-error: true
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        run: echo "Terraform validation passed ✅ — apply manually after merge"

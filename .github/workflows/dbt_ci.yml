@@ -1,15 +1,26 @@
+# ─────────────────────────────────────────────────────────────
+# dbt_ci.yml
+# Runs on every push/PR that touches dbt models or tests.
+# Blocks merge if any dbt test fails.
+# ─────────────────────────────────────────────────────────────
 name: dbt CI
 
 on:
   push:
-    branches: [main]
-    paths: ['dbt_olist/**']
+    branches: [main, develop]
+    paths:
+      - 'dbt_olist/**'
+      - '.github/workflows/dbt_ci.yml'
   pull_request:
-    paths: ['dbt_olist/**']
+    branches: [main]
+    paths:
+      - 'dbt_olist/**'
 
 jobs:
   dbt-test:
+    name: dbt compile + test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,27 +29,59 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: Install dbt
-        run: pip install dbt-snowflake
+        run: pip install dbt-snowflake==1.11.4
+
+      - name: Write profiles.yml
+        run: |
+          mkdir -p dbt_olist
+          cat > dbt_olist/profiles.yml << PROFILE
+          dbt_olist:
+            target: ci
+            outputs:
+              ci:
+                type: snowflake
+                account:   "${{ secrets.SNOWFLAKE_ACCOUNT }}"
+                user:      "${{ secrets.SNOWFLAKE_USER }}"
+                password:  "${{ secrets.SNOWFLAKE_PASSWORD }}"
+                role:      SYSADMIN
+                database:  OLIST_DW
+                warehouse: OLIST_WH
+                schema:    STAGING_CI
+                threads:   4
+                client_session_keep_alive: false
+          PROFILE
 
       - name: dbt debug
         working-directory: dbt_olist
         env:
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
+          DBT_PROFILES_DIR: .
         run: dbt debug
 
-      - name: dbt run
+      - name: dbt compile
         working-directory: dbt_olist
         env:
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
-        run: dbt run --full-refresh
+          DBT_PROFILES_DIR: .
+        run: dbt compile
 
-      - name: dbt test
+      - name: dbt run (staging only — fast)
         working-directory: dbt_olist
         env:
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-          DBT_PROFILES_DIR:   ${{ github.workspace }}/dbt_olist
+          DBT_PROFILES_DIR: .
+        run: dbt run --select staging
+
+      - name: dbt test (all tests)
+        working-directory: dbt_olist
+        env:
+          DBT_PROFILES_DIR: .
         run: dbt test
+
+      - name: Upload dbt logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-logs
+          path: dbt_olist/logs/
+          retention-days: 7
