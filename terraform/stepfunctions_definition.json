@@ -1,0 +1,140 @@
+{
+  "Comment": "Olist Data Pipeline — controlled by Step Functions",
+  "StartAt": "StartCrawler",
+
+  "States": {
+
+    "StartCrawler": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
+      "Parameters": {"action": "start_crawler"},
+      "ResultPath": "$.crawler_start",
+      "Next": "WaitForCrawler",
+      "Retry": [{
+        "ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 30,
+        "MaxAttempts": 2,
+        "BackoffRate": 2
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "WaitForCrawler": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckCrawler"
+    },
+
+    "CheckCrawler": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
+      "Parameters": {"action": "check_crawler"},
+      "ResultPath": "$.crawler_status",
+      "Next": "IsCrawlerDone",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "IsCrawlerDone": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.crawler_status.status",
+        "StringEquals": "READY",
+        "Next": "StartETL"
+      }],
+      "Default": "WaitForCrawler"
+    },
+
+    "StartETL": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
+      "Parameters": {"action": "start_etl"},
+      "ResultPath": "$.etl_start",
+      "Next": "WaitForETL",
+      "Retry": [{
+        "ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 60,
+        "MaxAttempts": 2,
+        "BackoffRate": 2
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "WaitForETL": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "CheckETL"
+    },
+
+    "CheckETL": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
+      "Parameters": {
+        "action": "check_etl",
+        "job_run_id.$": "$.etl_start.job_run_id"
+      },
+      "ResultPath": "$.etl_status",
+      "Next": "IsETLDone",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "IsETLDone": {
+      "Type": "Choice",
+      "Choices": [{
+        "Variable": "$.etl_status.status",
+        "StringEquals": "SUCCEEDED",
+        "Next": "ValidateS3"
+      }],
+      "Default": "WaitForETL"
+    },
+
+    "ValidateS3": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
+      "Parameters": {"action": "validate_s3"},
+      "ResultPath": "$.validation",
+      "Next": "PipelineSucceeded",
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "NotifyFailure",
+        "ResultPath": "$.error"
+      }]
+    },
+
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:us-east-1:516671521715:olist-pipeline-alerts",
+        "Subject": "🚨 Olist Pipeline FAILED",
+        "Message.$": "States.Format('Pipeline failed at step. Error: {}', $.error)"
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineError",
+      "Cause": "One or more pipeline steps failed — check SNS alert"
+    }
+  }
+}
