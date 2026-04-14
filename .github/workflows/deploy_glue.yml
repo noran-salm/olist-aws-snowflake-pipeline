@@ -1,8 +1,3 @@
-# ─────────────────────────────────────────────────────────────
-# deploy_glue.yml
-# Auto-deploys Glue ETL script to S3 when merged to main.
-# Only triggers when the Glue script actually changes.
-# ─────────────────────────────────────────────────────────────
 name: Deploy Glue ETL Script
 
 on:
@@ -10,7 +5,10 @@ on:
     branches: [main]
     paths:
       - 'glue_jobs/olist_etl_script.py'
-      - '.github/workflows/deploy_glue.yml'
+      - 'lambda_function/pipeline_orchestrator.py'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy-glue-script:
@@ -29,24 +27,21 @@ jobs:
           aws-region:            ${{ secrets.AWS_REGION }}
 
       - name: Validate script syntax
-        run: python3 -m py_compile glue_jobs/olist_etl_script.py && echo "✅ Syntax OK"
+        run: |
+          python3 -m py_compile glue_jobs/olist_etl_script.py
+          echo "✅ Syntax OK"
 
       - name: Upload ETL script to S3
         run: |
           aws s3 cp glue_jobs/olist_etl_script.py \
             s3://olist-lake-516671521715/scripts/olist_etl_script.py \
             --sse AES256
-          echo "✅ Script deployed to S3"
+          echo "✅ ETL script deployed"
 
-      - name: Upload orchestrator Lambda
+      - name: Update orchestrator Lambda
         run: |
           zip orchestrator.zip lambda_function/pipeline_orchestrator.py
           aws lambda update-function-code \
             --function-name olist-pipeline-orchestrator \
             --zip-file fileb://orchestrator.zip
-          echo "✅ Orchestrator Lambda updated"
-
-      - name: Verify deployment
-        run: |
-          aws s3 ls s3://olist-lake-516671521715/scripts/olist_etl_script.py
-          echo "✅ Verified on S3"
+          echo "✅ Lambda updated"
