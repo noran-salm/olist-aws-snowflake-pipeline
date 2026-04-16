@@ -58,3 +58,15 @@ variable "enable_glue_trigger" {
   type        = bool
   default     = true
 }
+
+variable "alert_email" {
+  description = "Email address to receive pipeline alerts"
+  type        = string
+  default     = "your-email@gmail.com"
+}
+
+variable "alert_email" {
+  description = "Email address to receive pipeline alerts"
+  type        = string
+  default     = "your-email@gmail.com"
+}
