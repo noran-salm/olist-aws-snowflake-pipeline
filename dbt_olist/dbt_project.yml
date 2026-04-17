@@ -53,3 +53,11 @@ quoting:
   database: false
   schema:   false
   identifier: false
+
+# Schema contracts — dbt will fail if columns are added/removed without approval
+seeds:
+  dbt_olist:
+    +column_types:
+      state_code: varchar
+      state_name: varchar
+      region:     varchar
