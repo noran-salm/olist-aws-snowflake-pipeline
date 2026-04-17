@@ -70,3 +70,6 @@ scripts/get_secret.py   # contains no secrets but good practice
 terraform/terraform.tfvars
 **/*.pem
 **/*.key
+*.zip
+lambda_function/layer/
+lambda_function/health_package/
