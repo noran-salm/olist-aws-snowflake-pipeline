@@ -116,7 +116,7 @@ SELECT
     ROUND(SUM(order_item_revenue), 2)                            AS total_gmv,
     ROUND(AVG(avg_review_score), 2)                              AS avg_review,
     ROUND(AVG(delivery_days), 1)                                 AS avg_days,
-    ROUND(100.0 * SUM(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
+    ROUND(100.0 * COUNT_IF(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
 FROM OLIST_DW.MARTS.fct_orders
 WHERE {year_clause}
 """)
