@@ -1,52 +1,175 @@
 """
-Olist E-commerce Analytics Dashboard
-Credential strategy:
-  - Streamlit Cloud: uses st.secrets (secrets.toml configured in dashboard)
-  - Local / AWS App Runner: uses AWS Secrets Manager via boto3
+dashboard/streamlit_app.py
+Olist E-commerce Analytics — Production Dashboard
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Architecture:
+  ├── Config layer   — page setup, CSS, theme
+  ├── Data layer     — cached Snowflake queries
+  ├── Logic layer    — KPI computation, transforms
+  └── UI layer       — rendering functions per section
+
+Credential priority:
+  1. st.secrets["snowflake"]  → Streamlit Cloud
+  2. AWS Secrets Manager       → AWS / ECS
+  3. Environment variables     → Local dev
 """
+
+# ── Standard library ──────────────────────────────────────────
 import os
+import json
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
+# ── Third-party ───────────────────────────────────────────────
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
+from plotly.subplots import make_subplots
 import snowflake.connector
+import streamlit as st
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("olist-dashboard")
+
+# ══════════════════════════════════════════════════════════════
+# 1. CONFIG LAYER
+# ══════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="Olist E-commerce Analytics",
+    page_title="Olist Analytics",
     page_icon="🛒",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={
+        "Get Help":     "https://github.com/noran-salm/olist-aws-snowflake-pipeline",
+        "Report a bug": "https://github.com/noran-salm/olist-aws-snowflake-pipeline/issues",
+        "About":        "Olist E-commerce Analytics — AWS + Snowflake + dbt pipeline",
+    },
 )
 
-# ── Credential Strategy ────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading credentials…")
-def get_credentials() -> dict:
-    """
-    Try Streamlit secrets first (works on Streamlit Cloud).
-    Fall back to AWS Secrets Manager (works on AWS/local).
-    """
-    # Strategy 1: Streamlit secrets (Streamlit Cloud deployment)
+# ── Inline CSS ────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* KPI card styling */
+div[data-testid="metric-container"] {
+    background: var(--background-color, #f8f9fa);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+div[data-testid="metric-container"] > label {
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280 !important;
+}
+div[data-testid="metric-container"] > div > div > div {
+    font-size: 1.8rem !important;
+    font-weight: 700 !important;
+}
+/* Section headers */
+.section-header {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #374151;
+    margin: 1.5rem 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid #f3f4f6;
+}
+/* Stale data warning */
+.stale-warning {
+    background: #fffbeb;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 0.82rem;
+    color: #92400e;
+}
+/* Tab styling */
+button[data-baseweb="tab"] {
+    font-size: 0.88rem !important;
+    font-weight: 500 !important;
+}
+/* Hide Streamlit branding in prod */
+#MainMenu { visibility: hidden; }
+footer    { visibility: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Color palette ─────────────────────────────────────────────
+COLORS = {
+    "primary":   "#FF6B35",
+    "secondary": "#1D9E75",
+    "tertiary":  "#3B8BD4",
+    "neutral":   "#6b7280",
+    "success":   "#10b981",
+    "warning":   "#f59e0b",
+    "danger":    "#ef4444",
+    "bg":        "#f9fafb",
+}
+
+PALETTE = [
+    "#FF6B35","#1D9E75","#3B8BD4","#8b5cf6",
+    "#f59e0b","#ec4899","#14b8a6","#64748b",
+]
+
+CHART_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="Inter, sans-serif", size=12, color="#374151"),
+    margin=dict(l=0, r=0, t=28, b=0),
+    legend=dict(
+        bgcolor="rgba(255,255,255,0.8)",
+        bordercolor="rgba(0,0,0,0.1)",
+        borderwidth=1,
+        font=dict(size=11),
+    ),
+    xaxis=dict(showgrid=False, zeroline=False),
+    yaxis=dict(
+        gridcolor="rgba(0,0,0,0.05)",
+        zeroline=False,
+        tickformat=",",
+    ),
+    hoverlabel=dict(
+        bgcolor="white",
+        bordercolor="rgba(0,0,0,0.15)",
+        font_size=12,
+    ),
+)
+
+
+# ══════════════════════════════════════════════════════════════
+# 2. DATA LAYER — cached Snowflake queries
+# ══════════════════════════════════════════════════════════════
+
+@st.cache_resource(show_spinner=False)
+def _get_credentials() -> dict:
+    """Fetch Snowflake credentials — try 3 sources in priority order."""
+    # Priority 1: Streamlit Cloud secrets
     try:
         creds = dict(st.secrets["snowflake"])
-        st.sidebar.caption("🔑 Auth: Streamlit Secrets")
+        log.info("Credentials: st.secrets")
         return creds
-    except (KeyError, FileNotFoundError):
+    except (KeyError, FileNotFoundError, AttributeError):
         pass
 
-    # Strategy 2: AWS Secrets Manager (AWS deployment)
+    # Priority 2: AWS Secrets Manager
     try:
-        import boto3, json
+        import boto3
         client = boto3.client("secretsmanager", region_name="us-east-1")
         resp   = client.get_secret_value(SecretId="olist/snowflake/credentials")
         creds  = json.loads(resp["SecretString"])
-        st.sidebar.caption("🔐 Auth: AWS Secrets Manager")
+        log.info("Credentials: AWS Secrets Manager")
         return creds
     except Exception:
         pass
 
-    # Strategy 3: Environment variables (local dev)
+    # Priority 3: Environment variables
     if os.environ.get("SNOWFLAKE_ACCOUNT"):
-        st.sidebar.caption("🔧 Auth: Environment Variables")
+        log.info("Credentials: environment variables")
         return {
             "account":   os.environ["SNOWFLAKE_ACCOUNT"],
             "user":      os.environ["SNOWFLAKE_USER"],
@@ -57,211 +180,818 @@ def get_credentials() -> dict:
             "warehouse": os.environ.get("SNOWFLAKE_WAREHOUSE", "OLIST_WH"),
         }
 
-    st.error("❌ No credentials found. Configure Streamlit secrets or AWS Secrets Manager.")
-    st.stop()
-
-
-@st.cache_resource(show_spinner="Connecting to Snowflake…")
-def get_snowflake_connection():
-    creds = get_credentials()
-    return snowflake.connector.connect(
-        account   = creds["account"],
-        user      = creds["user"],
-        password  = creds["password"],
-        role      = creds.get("role",      "SYSADMIN"),
-        database  = creds.get("database",  "OLIST_DW"),
-        schema    = creds.get("schema",    "MARTS"),
-        warehouse = creds.get("warehouse", "OLIST_WH"),
+    raise RuntimeError(
+        "No Snowflake credentials found. "
+        "Add [snowflake] to .streamlit/secrets.toml or set env vars."
     )
 
 
-@st.cache_data(ttl=600, show_spinner="Fetching data…")
-def run_query(sql: str) -> pd.DataFrame:
-    conn   = get_snowflake_connection()
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    df = cursor.fetch_pandas_all()
-    df.columns = [c.lower() for c in df.columns]
-    return df
-
-
-# ── Sidebar ─────────────────────────────────────────────────────
-with st.sidebar:
-    st.title("🛒 Olist Analytics")
-    st.divider()
-    selected_years = st.multiselect(
-        "Order Year", [2016, 2017, 2018], default=[2017, 2018]
+@st.cache_resource(show_spinner=False)
+def get_connection():
+    """Create and cache a single Snowflake connection for the session."""
+    creds = _get_credentials()
+    conn  = snowflake.connector.connect(
+        account         = creds["account"],
+        user            = creds["user"],
+        password        = creds["password"],
+        role            = creds.get("role",      "SYSADMIN"),
+        database        = creds.get("database",  "OLIST_DW"),
+        schema          = creds.get("schema",    "MARTS"),
+        warehouse       = creds.get("warehouse", "OLIST_WH"),
+        session_parameters={"QUERY_TAG": "streamlit-dashboard"},
     )
-    top_n = st.slider("Top N Categories", 5, 20, 10)
-    st.divider()
-    if st.button("🔄 Clear Cache"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.rerun()
+    return conn
 
-year_in = ','.join(str(y) for y in selected_years) if selected_years else '2017,2018'
-year_clause = f"YEAR(order_purchase_timestamp) IN ({year_in})"
-month_clause = f"YEAR(TO_DATE(order_year_month || '-01')) IN ({year_in})"
 
-# ── Header ──────────────────────────────────────────────────────
-st.title("🛒 Olist E-commerce Analytics")
-st.caption("AWS Lambda → S3 → Glue ETL → Snowflake → dbt → Streamlit")
-st.divider()
+@st.cache_data(ttl=600, show_spinner=False)
+def run_query(sql: str, label: str = "") -> pd.DataFrame:
+    """
+    Execute SQL and return a DataFrame.
+    Results are cached for 10 minutes (ttl=600).
+    Empty results return an empty DataFrame — never None.
+    """
+    try:
+        conn   = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        df = cursor.fetch_pandas_all()
+        df.columns = [c.lower() for c in df.columns]
+        log.info("Query OK [%s]: %d rows", label or sql[:40], len(df))
+        return df
+    except Exception as exc:
+        log.error("Query failed [%s]: %s", label, exc)
+        st.error(f"Query error ({label}): {exc}")
+        return pd.DataFrame()
 
-# ── KPIs ────────────────────────────────────────────────────────
-kpi = run_query(f"""
-SELECT
-    COUNT(DISTINCT order_id)                                      AS total_orders,
-    COUNT(*)                                                      AS total_items,
-    ROUND(SUM(order_item_revenue), 2)                            AS total_gmv,
-    ROUND(AVG(avg_review_score), 2)                              AS avg_review,
-    ROUND(AVG(delivery_days), 1)                                 AS avg_days,
-    ROUND(100.0 * SUM(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
-FROM OLIST_DW.MARTS.fct_orders
-WHERE {year_clause}
-""")
 
-if not kpi.empty:
-    c1,c2,c3,c4,c5,c6 = st.columns(6)
-    c1.metric("📦 Orders",       f"{int(kpi['total_orders'][0]):,}")
-    c2.metric("🛍️ Items",         f"{int(kpi['total_items'][0]):,}")
-    c3.metric("💰 GMV (BRL)",     f"R$ {kpi['total_gmv'][0]:,.0f}")
-    c4.metric("⭐ Avg Review",    f"{kpi['avg_review'][0]} / 5")
-    c5.metric("🚚 Avg Delivery",  f"{kpi['avg_days'][0]} days")
-    c6.metric("⏰ Late Rate",     f"{kpi['late_pct'][0]}%")
+def get_data_freshness() -> Optional[datetime]:
+    """Return the timestamp of the most recent order in MARTS."""
+    df = run_query(
+        "SELECT MAX(order_purchase_timestamp) AS ts FROM OLIST_DW.MARTS.fct_orders",
+        label="freshness"
+    )
+    if df.empty or df["ts"][0] is None:
+        return None
+    return pd.to_datetime(df["ts"][0])
 
-st.divider()
 
-# ── Row 1: Revenue + Categories ─────────────────────────────────
-col1, col2 = st.columns([3, 2])
+@st.cache_data(ttl=600, show_spinner=False)
+def load_kpis(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            COUNT(DISTINCT order_id)                                       AS total_orders,
+            COUNT(*)                                                       AS total_items,
+            ROUND(SUM(order_item_revenue), 2)                             AS total_gmv,
+            ROUND(AVG(avg_review_score), 2)                               AS avg_review,
+            ROUND(AVG(CASE WHEN delivery_days >= 0 THEN delivery_days END), 1) AS avg_days,
+            ROUND(100.0 * SUM(is_late_delivery) / NULLIF(COUNT(*), 0), 1) AS late_pct,
+            COUNT(DISTINCT customer_id)                                    AS unique_customers,
+            COUNT(DISTINCT seller_id)                                      AS active_sellers
+        FROM OLIST_DW.MARTS.fct_orders
+        WHERE {year_filter}
+    """, label="kpis")
 
-with col1:
-    st.subheader("📈 Monthly Revenue (BRL)")
-    rev = run_query(f"""
-        SELECT order_year_month, SUM(revenue_brl) AS revenue, SUM(total_orders) AS orders
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_monthly_revenue(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            order_year_month,
+            SUM(revenue_brl)   AS revenue,
+            SUM(total_orders)  AS orders,
+            SUM(total_items)   AS items,
+            AVG(avg_review)    AS avg_review
         FROM OLIST_DW.MARTS.fct_monthly_revenue
-        WHERE {month_clause}
-        GROUP BY 1 ORDER BY 1
-    """)
-    if not rev.empty:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=rev["order_year_month"], y=rev["revenue"],
-            mode="lines+markers",
-            line=dict(color="#FF6B35", width=2.5),
-            fill="tozeroy", fillcolor="rgba(255,107,53,0.12)",
-        ))
-        fig.update_layout(
-            xaxis_title="Month", yaxis_title="Revenue (BRL)",
-            hovermode="x unified",
-            margin=dict(l=0,r=0,t=10,b=0), height=320
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        WHERE YEAR(TO_DATE(order_year_month || '-01')) IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ', '').strip()})
+        GROUP BY 1
+        ORDER BY 1
+    """, label="monthly_revenue")
 
-with col2:
-    st.subheader(f"🏆 Top {top_n} Categories")
-    cat = run_query(f"""
-        SELECT COALESCE(product_category,'unknown') AS category,
-               ROUND(SUM(revenue_brl),2) AS revenue
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_category_revenue(year_filter: str, top_n: int) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            COALESCE(product_category, 'unknown')  AS category,
+            ROUND(SUM(revenue_brl), 0)             AS revenue,
+            SUM(total_orders)                      AS orders,
+            ROUND(AVG(avg_review), 2)              AS avg_review,
+            ROUND(AVG(avg_delivery_days), 1)       AS avg_days
         FROM OLIST_DW.MARTS.fct_monthly_revenue
-        WHERE {month_clause}
-        GROUP BY 1 ORDER BY revenue DESC LIMIT {top_n}
-    """)
-    if not cat.empty:
-        fig2 = px.bar(cat, x="revenue", y="category", orientation="h",
-                      color="revenue", color_continuous_scale="Oranges")
-        fig2.update_layout(
-            coloraxis_showscale=False,
-            margin=dict(l=0,r=0,t=10,b=0), height=320
-        )
-        fig2.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig2, use_container_width=True)
+        WHERE YEAR(TO_DATE(order_year_month || '-01'))
+              IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ','').strip()})
+        GROUP BY 1
+        ORDER BY revenue DESC
+        LIMIT {top_n}
+    """, label=f"categories_top{top_n}")
 
-st.divider()
 
-# ── Row 2: Status Pie + Sellers ─────────────────────────────────
-col3, col4 = st.columns([1, 2])
+@st.cache_data(ttl=600, show_spinner=False)
+def load_order_status(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            order_status,
+            COUNT(DISTINCT order_id) AS cnt,
+            ROUND(100.0 * COUNT(DISTINCT order_id) /
+                SUM(COUNT(DISTINCT order_id)) OVER (), 1) AS pct
+        FROM OLIST_DW.MARTS.fct_orders
+        WHERE {year_filter}
+        GROUP BY 1
+        ORDER BY cnt DESC
+    """, label="order_status")
 
-with col3:
-    st.subheader("📊 Order Status")
-    status = run_query(f"""
-        SELECT order_status, COUNT(DISTINCT order_id) AS cnt
-        FROM OLIST_DW.MARTS.fct_orders WHERE {year_clause}
-        GROUP BY 1 ORDER BY cnt DESC
-    """)
-    if not status.empty:
-        color_map = {
-            "delivered":"#2ECC71","shipped":"#3498DB",
-            "processing":"#F39C12","canceled":"#E74C3C",
-            "unavailable":"#95A5A6","invoiced":"#9B59B6",
-            "approved":"#1ABC9C","created":"#E67E22"
-        }
-        fig3 = px.pie(status, values="cnt", names="order_status",
-                      color="order_status",
-                      color_discrete_map=color_map, hole=0.45)
-        fig3.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=320)
-        st.plotly_chart(fig3, use_container_width=True)
 
-with col4:
-    st.subheader("🥇 Top Sellers")
-    sellers = run_query(f"""
-        SELECT f.seller_id, s.state, s.seller_tier AS tier,
-               COUNT(DISTINCT f.order_id) AS orders,
-               ROUND(SUM(f.order_item_revenue),2) AS gmv,
-               ROUND(AVG(f.avg_review_score),2) AS score
+@st.cache_data(ttl=600, show_spinner=False)
+def load_top_sellers(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            f.seller_id,
+            s.state,
+            s.seller_tier                                      AS tier,
+            COUNT(DISTINCT f.order_id)                         AS orders,
+            ROUND(SUM(f.order_item_revenue), 0)               AS gmv,
+            ROUND(AVG(f.avg_review_score), 2)                 AS score,
+            ROUND(AVG(CASE WHEN f.delivery_days >= 0
+                           THEN f.delivery_days END), 1)      AS avg_days,
+            ROUND(100.0 * SUM(f.is_late_delivery) /
+                  NULLIF(COUNT(*), 0), 1)                     AS late_pct
         FROM OLIST_DW.MARTS.fct_orders f
         JOIN OLIST_DW.MARTS.dim_sellers s ON f.seller_id = s.seller_id
-        WHERE {year_clause}
-        GROUP BY 1,2,3 ORDER BY gmv DESC LIMIT 15
-    """)
-    if not sellers.empty:
-        icons = {"platinum":"🥇","gold":"🥈","silver":"🥉","bronze":"🔵"}
-        sellers["tier"] = sellers["tier"].map(
-            lambda t: f"{icons.get(t,'')} {t.title()}" if t else "—"
-        )
-        sellers.columns = ["Seller ID","State","Tier","Orders","GMV (BRL)","Score"]
-        st.dataframe(sellers, use_container_width=True, height=320)
+        WHERE {year_filter}
+        GROUP BY 1, 2, 3
+        ORDER BY gmv DESC
+        LIMIT 20
+    """, label="top_sellers")
 
-st.divider()
 
-# ── Region Chart ─────────────────────────────────────────────────
-st.subheader("🗺️ Revenue by Region")
-region = run_query(f"""
-    SELECT customer_region AS region,
-           ROUND(SUM(revenue_brl),0) AS revenue,
-           SUM(total_orders) AS orders
-    FROM OLIST_DW.MARTS.fct_monthly_revenue
-    WHERE customer_region IS NOT NULL AND {month_clause}
-    GROUP BY 1 ORDER BY revenue DESC
-""")
-if not region.empty:
-    col_r1, col_r2 = st.columns([2, 1])
-    with col_r1:
-        fig4 = px.bar(region, x="region", y="revenue",
-                      color="revenue", color_continuous_scale="Oranges")
-        fig4.update_layout(
-            coloraxis_showscale=False,
-            margin=dict(l=0,r=0,t=10,b=0), height=300
-        )
-        st.plotly_chart(fig4, use_container_width=True)
-    with col_r2:
-        st.dataframe(
-            region.rename(columns={"region":"Region",
-                                   "revenue":"Revenue (BRL)",
-                                   "orders":"Orders"}),
-            use_container_width=True, height=300
-        )
+@st.cache_data(ttl=600, show_spinner=False)
+def load_region_data(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            customer_region                        AS region,
+            customer_state                         AS state,
+            customer_state_name                    AS state_name,
+            ROUND(SUM(revenue_brl), 0)            AS revenue,
+            SUM(total_orders)                     AS orders,
+            ROUND(AVG(avg_review), 2)             AS avg_review,
+            ROUND(AVG(avg_delivery_days), 1)      AS avg_days
+        FROM OLIST_DW.MARTS.fct_monthly_revenue
+        WHERE customer_region IS NOT NULL
+          AND YEAR(TO_DATE(order_year_month || '-01'))
+              IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ','').strip()})
+        GROUP BY 1, 2, 3
+        ORDER BY revenue DESC
+    """, label="region")
 
-# ── Raw Explorer ─────────────────────────────────────────────────
-with st.expander("🔍 Raw Data Explorer"):
-    tbl = st.selectbox("Table", [
-        "fct_orders","fct_monthly_revenue",
-        "dim_customers","dim_products","dim_sellers"
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_delivery_performance(year_filter: str) -> pd.DataFrame:
+    return run_query(f"""
+        SELECT
+            customer_state,
+            COUNT(DISTINCT order_id)                              AS orders,
+            ROUND(AVG(CASE WHEN delivery_days >= 0
+                           THEN delivery_days END), 1)           AS avg_days,
+            ROUND(100.0 * SUM(is_late_delivery) /
+                  NULLIF(COUNT(*), 0), 1)                        AS late_pct,
+            ROUND(AVG(avg_review_score), 2)                      AS avg_score
+        FROM OLIST_DW.MARTS.fct_orders
+        WHERE {year_filter}
+          AND customer_state IS NOT NULL
+        GROUP BY 1
+        HAVING COUNT(DISTINCT order_id) > 100
+        ORDER BY late_pct DESC
+        LIMIT 15
+    """, label="delivery")
+
+
+# ══════════════════════════════════════════════════════════════
+# 3. LOGIC LAYER — transforms and computations
+# ══════════════════════════════════════════════════════════════
+
+def fmt_brl(value: float) -> str:
+    """Format a BRL currency value for display."""
+    if value >= 1_000_000:
+        return f"R$ {value/1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"R$ {value/1_000:.1f}K"
+    return f"R$ {value:,.0f}"
+
+
+def fmt_num(value: float) -> str:
+    """Format a large integer for display."""
+    if value >= 1_000_000:
+        return f"{value/1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value/1_000:.1f}K"
+    return f"{int(value):,}"
+
+
+TIER_ICON = {
+    "platinum": "🥇 Platinum",
+    "gold":     "🥈 Gold",
+    "silver":   "🥉 Silver",
+    "bronze":   "🔵 Bronze",
+}
+
+STATUS_COLOR = {
+    "delivered":    "#10b981",
+    "shipped":      "#3b82f6",
+    "processing":   "#f59e0b",
+    "canceled":     "#ef4444",
+    "unavailable":  "#9ca3af",
+    "invoiced":     "#8b5cf6",
+    "approved":     "#14b8a6",
+    "created":      "#f97316",
+}
+
+
+def is_data_stale(ts: Optional[datetime], threshold_hours: int = 48) -> bool:
+    if ts is None:
+        return True
+    age = datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)
+    return age > timedelta(hours=threshold_hours)
+
+
+# ══════════════════════════════════════════════════════════════
+# 4. UI LAYER — rendering functions
+# ══════════════════════════════════════════════════════════════
+
+# ── 4.0 Header ────────────────────────────────────────────────
+
+def render_header(last_refresh: Optional[datetime]):
+    col_title, col_meta = st.columns([3, 1])
+    with col_title:
+        st.markdown("## 🛒 Olist E-commerce Analytics")
+        st.caption(
+            "AWS Lambda → S3 → Glue ETL → Snowflake → dbt → Streamlit"
+        )
+    with col_meta:
+        if last_refresh:
+            age_h = (
+                datetime.now(timezone.utc)
+                - last_refresh.replace(tzinfo=timezone.utc)
+            ).total_seconds() / 3600
+            if is_data_stale(last_refresh):
+                st.markdown(
+                    f'<div class="stale-warning">⚠️ Data may be stale<br>'
+                    f'Last order: {last_refresh.strftime("%Y-%m-%d")}'
+                    f'  ({age_h:.0f}h ago)</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.success(
+                    f"✅ Fresh data\n{last_refresh.strftime('%Y-%m-%d')}",
+                    icon=None,
+                )
+        else:
+            st.warning("⚠️ Cannot determine data freshness")
+
+
+# ── 4.1 KPI Cards ─────────────────────────────────────────────
+
+def render_kpis(df: pd.DataFrame):
+    if df.empty:
+        st.info("No KPI data for selected filters.")
+        return
+
+    r = df.iloc[0]
+    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+
+    c1.metric("📦 Orders",          fmt_num(r["total_orders"]))
+    c2.metric("🛍️ Items Sold",       fmt_num(r["total_items"]))
+    c3.metric("💰 Total GMV",        fmt_brl(r["total_gmv"]))
+    c4.metric("👥 Customers",        fmt_num(r["unique_customers"]))
+    c5.metric("🏪 Active Sellers",   fmt_num(r["active_sellers"]))
+    c6.metric("⭐ Avg Review",
+              f"{r['avg_review']:.2f}",
+              delta=f"/ 5.0",
+              delta_color="off")
+    c7.metric("🚚 Avg Delivery",     f"{r['avg_days']:.1f} days")
+    c8.metric("⏰ Late Rate",
+              f"{r['late_pct']:.1f}%",
+              delta=f"{'High' if r['late_pct'] > 10 else 'OK'}",
+              delta_color="inverse" if r["late_pct"] > 10 else "off")
+
+
+# ── 4.2 Revenue Trend ─────────────────────────────────────────
+
+def render_revenue_trend(df: pd.DataFrame):
+    if df.empty:
+        st.info("No revenue data for selected filters.")
+        return
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=df["order_year_month"],
+            y=df["revenue"],
+            name="Revenue (BRL)",
+            marker_color=COLORS["primary"],
+            opacity=0.85,
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Revenue: R$ %{y:,.0f}<br>"
+                "<extra></extra>"
+            ),
+        ),
+        secondary_y=False,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["order_year_month"],
+            y=df["orders"],
+            name="Orders",
+            mode="lines+markers",
+            line=dict(color=COLORS["tertiary"], width=2),
+            marker=dict(size=5),
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Orders: %{y:,}<br>"
+                "<extra></extra>"
+            ),
+        ),
+        secondary_y=True,
+    )
+
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=300,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode="x unified",
+    )
+    fig.update_yaxes(
+        title_text="Revenue (BRL)",
+        tickformat=",.0f",
+        secondary_y=False,
+        gridcolor="rgba(0,0,0,0.05)",
+    )
+    fig.update_yaxes(
+        title_text="Orders",
+        tickformat=",",
+        secondary_y=True,
+        showgrid=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── 4.3 Category Chart ────────────────────────────────────────
+
+def render_categories(df: pd.DataFrame):
+    if df.empty:
+        st.info("No category data.")
+        return
+
+    fig = px.bar(
+        df,
+        x="revenue",
+        y="category",
+        orientation="h",
+        color="avg_review",
+        color_continuous_scale="RdYlGn",
+        range_color=[3.0, 5.0],
+        labels={
+            "revenue":    "Revenue (BRL)",
+            "category":   "",
+            "avg_review": "Avg Review",
+            "orders":     "Orders",
+        },
+        hover_data={"orders": True, "avg_review": ":.2f", "avg_days": True},
+        custom_data=["orders", "avg_review", "avg_days"],
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Revenue: R$ %{x:,.0f}<br>"
+            "Orders: %{customdata[0]:,}<br>"
+            "Avg Review: %{customdata[1]:.2f}<br>"
+            "Avg Delivery: %{customdata[2]:.1f} days<br>"
+            "<extra></extra>"
+        )
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(**CHART_LAYOUT, height=360,
+                      coloraxis_colorbar=dict(
+                          title="Review",
+                          thickness=10,
+                          len=0.6,
+                      ))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── 4.4 Order Status ──────────────────────────────────────────
+
+def render_order_status(df: pd.DataFrame):
+    if df.empty:
+        st.info("No order status data.")
+        return
+
+    colors = [STATUS_COLOR.get(s, "#9ca3af") for s in df["order_status"]]
+
+    fig = go.Figure(go.Pie(
+        labels=df["order_status"].str.title(),
+        values=df["cnt"],
+        marker=dict(colors=colors, line=dict(color="white", width=2)),
+        hole=0.5,
+        textinfo="percent",
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "Orders: %{value:,}<br>"
+            "Share: %{percent}<br>"
+            "<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        **CHART_LAYOUT,
+        height=300,
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            x=1.0,
+            y=0.5,
+            font=dict(size=10),
+        ),
+    )
+    # Centre annotation
+    total = df["cnt"].sum()
+    fig.add_annotation(
+        text=f"<b>{fmt_num(total)}</b><br><span style='font-size:10px'>orders</span>",
+        x=0.5, y=0.5,
+        showarrow=False,
+        font=dict(size=14),
+        xref="paper", yref="paper",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── 4.5 Top Sellers Table ─────────────────────────────────────
+
+def render_top_sellers(df: pd.DataFrame):
+    if df.empty:
+        st.info("No seller data.")
+        return
+
+    display = df.copy()
+    display["tier"]     = display["tier"].map(lambda t: TIER_ICON.get(t, t))
+    display["gmv"]      = display["gmv"].apply(fmt_brl)
+    display["late_pct"] = display["late_pct"].apply(lambda x: f"{x:.1f}%")
+    display["score"]    = display["score"].apply(lambda x: f"⭐ {x:.2f}")
+    display = display.rename(columns={
+        "seller_id": "Seller ID",
+        "state":     "State",
+        "tier":      "Tier",
+        "orders":    "Orders",
+        "gmv":       "GMV",
+        "score":     "Review",
+        "avg_days":  "Avg Days",
+        "late_pct":  "Late %",
+    })
+    cols = ["Seller ID","State","Tier","Orders","GMV","Review","Avg Days","Late %"]
+    st.dataframe(
+        display[cols],
+        use_container_width=True,
+        height=400,
+        hide_index=True,
+    )
+
+
+# ── 4.6 Region Chart ──────────────────────────────────────────
+
+def render_region_bars(df: pd.DataFrame):
+    if df.empty:
+        st.info("No region data.")
+        return
+
+    region_agg = (
+        df.groupby("region")
+        .agg(revenue=("revenue", "sum"), orders=("orders", "sum"))
+        .reset_index()
+        .sort_values("revenue", ascending=False)
+    )
+
+    fig = px.bar(
+        region_agg,
+        x="region",
+        y="revenue",
+        color="region",
+        color_discrete_sequence=PALETTE,
+        labels={"revenue": "Revenue (BRL)", "region": "Region"},
+        hover_data={"orders": True},
+        custom_data=["orders"],
+    )
+    fig.update_traces(
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            "Revenue: R$ %{y:,.0f}<br>"
+            "Orders: %{customdata[0]:,}<br>"
+            "<extra></extra>"
+        )
+    )
+    fig.update_layout(**CHART_LAYOUT, height=260, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_state_table(df: pd.DataFrame):
+    if df.empty:
+        return
+    display = df[["state_name","state","region","revenue","orders","avg_review","avg_days"]].copy()
+    display["revenue"] = display["revenue"].apply(fmt_brl)
+    display = display.rename(columns={
+        "state_name": "State",
+        "state":      "Code",
+        "region":     "Region",
+        "revenue":    "Revenue",
+        "orders":     "Orders",
+        "avg_review": "Avg Review",
+        "avg_days":   "Avg Days",
+    })
+    st.dataframe(display, use_container_width=True, height=280, hide_index=True)
+
+
+# ── 4.7 Delivery Performance ──────────────────────────────────
+
+def render_delivery(df: pd.DataFrame):
+    if df.empty:
+        st.info("No delivery data.")
+        return
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Late Delivery Rate by State (%)", "Avg Delivery Days by State"),
+        horizontal_spacing=0.12,
+    )
+
+    top_late = df.sort_values("late_pct", ascending=True).tail(10)
+    fig.add_trace(
+        go.Bar(
+            x=top_late["late_pct"],
+            y=top_late["customer_state"],
+            orientation="h",
+            marker_color=[
+                COLORS["danger"] if x > 15 else
+                COLORS["warning"] if x > 8 else
+                COLORS["success"]
+                for x in top_late["late_pct"]
+            ],
+            hovertemplate="<b>%{y}</b>: %{x:.1f}%<extra></extra>",
+            name="Late %",
+        ),
+        row=1, col=1,
+    )
+
+    top_days = df.sort_values("avg_days", ascending=True).tail(10)
+    fig.add_trace(
+        go.Bar(
+            x=top_days["avg_days"],
+            y=top_days["customer_state"],
+            orientation="h",
+            marker_color=COLORS["tertiary"],
+            opacity=0.8,
+            hovertemplate="<b>%{y}</b>: %{x:.1f} days<extra></extra>",
+            name="Avg Days",
+        ),
+        row=1, col=2,
+    )
+
+    fig.update_layout(**CHART_LAYOUT, height=300, showlegend=False)
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ── 4.8 Download helper ───────────────────────────────────────
+
+def download_button(df: pd.DataFrame, filename: str, label: str = "⬇️ Download CSV"):
+    if df.empty:
+        return
+    st.download_button(
+        label=label,
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=filename,
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. SIDEBAR
+# ══════════════════════════════════════════════════════════════
+
+def render_sidebar() -> dict:
+    """Render sidebar controls and return filter config."""
+    with st.sidebar:
+        st.image(
+            "https://olist.com/wp-content/uploads/2021/08/logo-olist.png",
+            width=120,
+        )
+        st.markdown("### Filters")
+        st.divider()
+
+        # Year filter
+        selected_years = st.multiselect(
+            "Order Year",
+            options=[2016, 2017, 2018],
+            default=[2017, 2018],
+            help="Filter orders by purchase year",
+        )
+        if not selected_years:
+            selected_years = [2017, 2018]
+
+        # Top N categories
+        top_n = st.slider("Top N categories", 5, 20, 10, step=1)
+
+        st.divider()
+        st.markdown("### Display")
+        show_raw = st.checkbox("Show raw data explorer", value=False)
+
+        st.divider()
+        # Cache controls
+        if st.button("🔄 Refresh data", use_container_width=True):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
+
+        st.divider()
+        st.caption("Pipeline: AWS Glue → Snowflake → dbt")
+        st.caption("Data: Olist Brazilian E-commerce")
+
+    # Build SQL-safe year clause
+    years_str  = ",".join(str(y) for y in selected_years)
+    year_filter = f"YEAR(order_purchase_timestamp) IN ({years_str})"
+
+    return {
+        "selected_years": selected_years,
+        "year_filter":    year_filter,
+        "years_str":      years_str,
+        "top_n":          top_n,
+        "show_raw":       show_raw,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. MAIN APP
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    # ── Sidebar ───────────────────────────────────────────────
+    filters = render_sidebar()
+
+    # ── Freshness check ───────────────────────────────────────
+    with st.spinner("Checking data freshness…"):
+        last_refresh = get_data_freshness()
+
+    # ── Header ────────────────────────────────────────────────
+    render_header(last_refresh)
+    st.divider()
+
+    # ── KPIs ──────────────────────────────────────────────────
+    with st.spinner("Loading KPIs…"):
+        kpi_df = load_kpis(filters["year_filter"])
+    render_kpis(kpi_df)
+
+    st.divider()
+
+    # ── Tabs ──────────────────────────────────────────────────
+    tab_revenue, tab_categories, tab_geo, tab_sellers, tab_delivery = st.tabs([
+        "📈 Revenue",
+        "🏆 Categories",
+        "🗺️ Geography",
+        "🥇 Sellers",
+        "🚚 Delivery",
     ])
-    raw = run_query(f"SELECT * FROM OLIST_DW.MARTS.{tbl} LIMIT 500")
-    st.dataframe(raw, use_container_width=True)
-    st.download_button("⬇️ Download CSV",
-        data=raw.to_csv(index=False).encode(),
-        file_name=f"{tbl}.csv", mime="text/csv")
 
-st.caption("© Olist Analytics · AWS + Snowflake + dbt + Streamlit")
+    # ── TAB 1: Revenue ────────────────────────────────────────
+    with tab_revenue:
+        col_l, col_r = st.columns([2, 1])
+
+        with col_l:
+            st.markdown('<p class="section-header">Monthly Revenue & Order Volume</p>',
+                        unsafe_allow_html=True)
+            with st.spinner("Loading revenue trend…"):
+                rev_df = load_monthly_revenue(filters["year_filter"])
+            render_revenue_trend(rev_df)
+            download_button(rev_df, "monthly_revenue.csv", "⬇️ Monthly revenue CSV")
+
+        with col_r:
+            st.markdown('<p class="section-header">Order Status Breakdown</p>',
+                        unsafe_allow_html=True)
+            with st.spinner("Loading order status…"):
+                status_df = load_order_status(filters["year_filter"])
+            render_order_status(status_df)
+
+        # Revenue summary table
+        if not rev_df.empty:
+            st.markdown('<p class="section-header">Monthly Summary</p>',
+                        unsafe_allow_html=True)
+            summary = rev_df.copy()
+            summary["revenue"] = summary["revenue"].apply(fmt_brl)
+            summary["orders"]  = summary["orders"].apply(fmt_num)
+            summary = summary.rename(columns={
+                "order_year_month": "Month",
+                "revenue":          "Revenue",
+                "orders":           "Orders",
+                "items":            "Items",
+                "avg_review":       "Avg Review",
+            })
+            st.dataframe(summary, use_container_width=True,
+                         hide_index=True, height=220)
+
+    # ── TAB 2: Categories ─────────────────────────────────────
+    with tab_categories:
+        st.markdown(
+            f'<p class="section-header">Top {filters["top_n"]} Categories by Revenue</p>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Color = average review score (green = higher, red = lower)")
+        with st.spinner("Loading categories…"):
+            cat_df = load_category_revenue(
+                filters["year_filter"], filters["top_n"]
+            )
+        render_categories(cat_df)
+        download_button(cat_df, "top_categories.csv")
+
+    # ── TAB 3: Geography ──────────────────────────────────────
+    with tab_geo:
+        with st.spinner("Loading geography data…"):
+            region_df = load_region_data(filters["year_filter"])
+
+        col_geo_l, col_geo_r = st.columns([1, 2])
+
+        with col_geo_l:
+            st.markdown('<p class="section-header">Revenue by Region</p>',
+                        unsafe_allow_html=True)
+            render_region_bars(region_df)
+
+        with col_geo_r:
+            st.markdown('<p class="section-header">State Breakdown</p>',
+                        unsafe_allow_html=True)
+            render_state_table(region_df)
+
+        download_button(region_df, "geography.csv")
+
+    # ── TAB 4: Sellers ────────────────────────────────────────
+    with tab_sellers:
+        st.markdown('<p class="section-header">Top 20 Sellers by GMV</p>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Tier is based on total GMV: "
+            "🥇 Platinum ≥ R$50K · 🥈 Gold ≥ R$10K · 🥉 Silver ≥ R$1K · 🔵 Bronze"
+        )
+        with st.spinner("Loading sellers…"):
+            sellers_df = load_top_sellers(filters["year_filter"])
+
+        # Tier filter
+        tiers = ["All"] + sorted(sellers_df["tier"].dropna().unique().tolist())
+        sel_tier = st.selectbox("Filter by tier", options=tiers, index=0)
+        if sel_tier != "All":
+            sellers_df = sellers_df[sellers_df["tier"] == sel_tier]
+
+        render_top_sellers(sellers_df)
+        download_button(sellers_df, "top_sellers.csv")
+
+    # ── TAB 5: Delivery ───────────────────────────────────────
+    with tab_delivery:
+        st.markdown(
+            '<p class="section-header">Delivery Performance by State</p>',
+            unsafe_allow_html=True,
+        )
+        st.caption("States with > 100 orders. Red = late rate > 15%, amber = > 8%.")
+        with st.spinner("Loading delivery data…"):
+            delivery_df = load_delivery_performance(filters["year_filter"])
+        render_delivery(delivery_df)
+        download_button(delivery_df, "delivery_performance.csv")
+
+    # ── Raw Data Explorer ─────────────────────────────────────
+    if filters["show_raw"]:
+        st.divider()
+        st.markdown("### 🔍 Raw Data Explorer")
+        tbl = st.selectbox(
+            "Select table",
+            ["fct_orders", "fct_monthly_revenue",
+             "dim_customers", "dim_products", "dim_sellers"],
+        )
+        limit = st.slider("Rows to show", 50, 1000, 200, step=50)
+        with st.spinner(f"Loading {tbl}…"):
+            raw_df = run_query(
+                f"SELECT * FROM OLIST_DW.MARTS.{tbl} LIMIT {limit}",
+                label=f"raw_{tbl}"
+            )
+        if not raw_df.empty:
+            st.dataframe(raw_df, use_container_width=True)
+            download_button(raw_df, f"{tbl}.csv", f"⬇️ Download {tbl}.csv")
+
+    # ── Footer ────────────────────────────────────────────────
+    st.divider()
+    st.caption(
+        "© Olist Analytics · "
+        "AWS Lambda → S3 → Glue ETL → Snowflake → dbt Core → Streamlit · "
+        f"Dashboard refreshed: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+
+
+# ── Entry point ───────────────────────────────────────────────
+if __name__ == "__main__":
+    main()
