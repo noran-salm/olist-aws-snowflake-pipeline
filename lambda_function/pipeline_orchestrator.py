@@ -179,7 +179,7 @@ def handler(event, context):
     log.run_id = event.get("run_id",
         datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S"))
     action = event.get("action")
-    log.info("action_started", action=action, event=event)
+    log.info("action_started", action=action, input_event=str(event))
 
     if action not in ACTIONS:
         raise ValueError(f"Unknown action '{action}'. Valid: {list(ACTIONS)}")
