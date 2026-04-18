@@ -223,21 +223,6 @@ def run_query(sql: str, label: str = "") -> pd.DataFrame:
         st.error(f"Query error ({label}): {exc}")
         return pd.DataFrame()
 
-<<<<<<< HEAD
-=======
-# ── KPIs ────────────────────────────────────────────────────────
-kpi = run_query(f"""
-SELECT
-    COUNT(DISTINCT order_id)                                      AS total_orders,
-    COUNT(*)                                                      AS total_items,
-    ROUND(SUM(order_item_revenue), 2)                            AS total_gmv,
-    ROUND(AVG(avg_review_score), 2)                              AS avg_review,
-    ROUND(AVG(delivery_days), 1)                                 AS avg_days,
-    ROUND(100.0 * COUNT_IF(is_late_delivery) / NULLIF(COUNT(*),0), 2) AS late_pct
-FROM OLIST_DW.MARTS.fct_orders
-WHERE {year_clause}
-""")
->>>>>>> c8d3d2152e459190d65b8e5b59f5b3bd39580027
 
 def get_data_freshness() -> Optional[datetime]:
     """Return the timestamp of the most recent order in MARTS."""
