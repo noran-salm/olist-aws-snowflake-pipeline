@@ -1,22 +1,16 @@
--- models/marts/fct_orders.sql
--- INCREMENTAL: on each run, only process orders newer than the last run
--- First run: processes all rows (like table)
--- Subsequent runs: only appends new order_year_month partitions
-
 {{
     config(
-        materialized       = 'incremental',
-        unique_key         = ['order_id', 'order_item_id'],
+        materialized         = 'incremental',
+        unique_key           = ['order_id', 'order_item_id'],
         incremental_strategy = 'merge',
-        schema             = 'marts',
-        cluster_by         = ['order_year_month']
+        schema               = 'marts',
+        on_schema_change     = 'append_new_columns',
+        cluster_by           = ['order_year_month']
     )
 }}
 
 WITH orders AS (
     SELECT * FROM {{ ref('stg_orders') }}
-
-    -- On incremental runs: only pick up rows newer than what we already have
     {% if is_incremental() %}
     WHERE order_purchase_timestamp > (
         SELECT COALESCE(MAX(order_purchase_timestamp), '2000-01-01')
@@ -24,19 +18,16 @@ WITH orders AS (
     )
     {% endif %}
 ),
-
 customers AS (
     SELECT customer_id, city AS customer_city,
            state AS customer_state, customer_segment
     FROM {{ ref('dim_customers') }}
 ),
-
 products AS (
     SELECT product_id, category,
            revenue_tier AS product_revenue_tier
     FROM {{ ref('dim_products') }}
 ),
-
 sellers AS (
     SELECT seller_id, city AS seller_city,
            state AS seller_state, seller_tier
@@ -74,7 +65,7 @@ SELECT
     o.avg_review_score,
     o.delivery_days,
     o.is_late_delivery,
-    DATE_TRUNC('month', o.order_purchase_timestamp)   AS order_month,
+    DATE_TRUNC('month',   o.order_purchase_timestamp) AS order_month,
     DATE_TRUNC('quarter', o.order_purchase_timestamp) AS order_quarter,
     YEAR(o.order_purchase_timestamp)                  AS order_year,
     CURRENT_TIMESTAMP()                               AS updated_at

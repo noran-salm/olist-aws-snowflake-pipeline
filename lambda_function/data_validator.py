@@ -86,7 +86,9 @@ def check_file_exists(run_id: str) -> list:
     return results
 
 
-def check_file_freshness(run_id: str, max_age_hours: int = 48) -> list:
+def check_file_freshness(run_id: str, max_age_hours: int = None) -> list:
+    if max_age_hours is None:
+        max_age_hours = int(os.environ.get("MAX_FILE_AGE_HOURS", 720))
     results = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=RAW_PREFIX)
