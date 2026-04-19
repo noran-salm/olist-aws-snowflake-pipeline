@@ -11,37 +11,45 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  deploy-glue-script:
-    name: Upload ETL script to S3
+  deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Validate script syntax
-        run: |
-          python3 -m py_compile glue_jobs/olist_etl_script.py
-          echo "✅ Syntax OK"
+      - name: Validate Glue script syntax
+        run: python3 -m py_compile glue_jobs/olist_etl_script.py && echo "Syntax OK"
 
-      - name: Upload ETL script to S3
+      - name: Deploy Glue script to S3
         run: |
           aws s3 cp glue_jobs/olist_etl_script.py \
             s3://olist-lake-516671521715/scripts/olist_etl_script.py \
             --sse AES256
-          echo "✅ ETL script deployed"
+          echo "Glue script deployed"
 
-      - name: Update orchestrator Lambda
+      - name: Deploy orchestrator Lambda
         run: |
-          zip orchestrator.zip lambda_function/pipeline_orchestrator.py
+          cd lambda_function
+          zip -j orchestrator.zip pipeline_orchestrator.py
+          unzip -l orchestrator.zip
           aws lambda update-function-code \
             --function-name olist-pipeline-orchestrator \
             --zip-file fileb://orchestrator.zip
-          echo "✅ Lambda updated"
+          aws lambda wait function-updated \
+            --function-name olist-pipeline-orchestrator
+          echo "Lambda deployed"
+
+      - name: Smoke test Lambda
+        run: |
+          PAYLOAD=$(python3 -c "import base64,json; print(base64.b64encode(json.dumps({'action':'validate_s3','run_id':'ci-smoke'}).encode()).decode())")
+          aws lambda invoke \
+            --function-name olist-pipeline-orchestrator \
+            --payload "$PAYLOAD" /tmp/r.json
+          cat /tmp/r.json
+          python3 -c "import json; d=json.load(open('/tmp/r.json')); exit(0 if d.get('status')=='VALID' else 1)"
+          echo "Smoke test PASSED"
