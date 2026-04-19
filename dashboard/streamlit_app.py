@@ -235,6 +235,14 @@ def get_data_freshness() -> Optional[datetime]:
     return pd.to_datetime(df["ts"][0])
 
 
+def _extract_years(year_filter: str) -> str:
+    """Extract year list from filter like 'YEAR(col) IN (2017,2018)'"""
+    import re
+    match = re.search(r'IN\s*\(([^)]+)\)', year_filter)
+    if not match:
+        return ""
+    return match.group(1)  # e.g., "2017,2018"
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_kpis(year_filter: str) -> pd.DataFrame:
     return run_query(f"""
@@ -244,7 +252,7 @@ def load_kpis(year_filter: str) -> pd.DataFrame:
             ROUND(SUM(order_item_revenue), 2)                             AS total_gmv,
             ROUND(AVG(avg_review_score), 2)                               AS avg_review,
             ROUND(AVG(CASE WHEN delivery_days >= 0 THEN delivery_days END), 1) AS avg_days,
-            ROUND(100.0 * SUM(is_late_delivery) / NULLIF(COUNT(*), 0), 1) AS late_pct,
+            ROUND(100.0 * COUNT_IF(is_late_delivery) / NULLIF(COUNT(*), 0), 1) AS late_pct,
             COUNT(DISTINCT customer_id)                                    AS unique_customers,
             COUNT(DISTINCT seller_id)                                      AS active_sellers
         FROM OLIST_DW.MARTS.fct_orders
@@ -254,6 +262,9 @@ def load_kpis(year_filter: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_monthly_revenue(year_filter: str) -> pd.DataFrame:
+    years = _extract_years(year_filter)
+    if not years:
+        return pd.DataFrame()
     return run_query(f"""
         SELECT
             order_year_month,
@@ -262,7 +273,7 @@ def load_monthly_revenue(year_filter: str) -> pd.DataFrame:
             SUM(total_items)   AS items,
             AVG(avg_review)    AS avg_review
         FROM OLIST_DW.MARTS.fct_monthly_revenue
-        WHERE YEAR(TO_DATE(order_year_month || '-01')) IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ', '').strip()})
+        WHERE YEAR(TO_DATE(order_year_month || '-01')) IN ({years})
         GROUP BY 1
         ORDER BY 1
     """, label="monthly_revenue")
@@ -270,6 +281,9 @@ def load_monthly_revenue(year_filter: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_category_revenue(year_filter: str, top_n: int) -> pd.DataFrame:
+    years = _extract_years(year_filter)
+    if not years:
+        return pd.DataFrame()
     return run_query(f"""
         SELECT
             COALESCE(product_category, 'unknown')  AS category,
@@ -278,8 +292,7 @@ def load_category_revenue(year_filter: str, top_n: int) -> pd.DataFrame:
             ROUND(AVG(avg_review), 2)              AS avg_review,
             ROUND(AVG(avg_delivery_days), 1)       AS avg_days
         FROM OLIST_DW.MARTS.fct_monthly_revenue
-        WHERE YEAR(TO_DATE(order_year_month || '-01'))
-              IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ','').strip()})
+        WHERE YEAR(TO_DATE(order_year_month || '-01')) IN ({years})
         GROUP BY 1
         ORDER BY revenue DESC
         LIMIT {top_n}
@@ -326,6 +339,9 @@ def load_top_sellers(year_filter: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_region_data(year_filter: str) -> pd.DataFrame:
+    years = _extract_years(year_filter)
+    if not years:
+        return pd.DataFrame()
     return run_query(f"""
         SELECT
             customer_region                        AS region,
@@ -337,8 +353,7 @@ def load_region_data(year_filter: str) -> pd.DataFrame:
             ROUND(AVG(avg_delivery_days), 1)      AS avg_days
         FROM OLIST_DW.MARTS.fct_monthly_revenue
         WHERE customer_region IS NOT NULL
-          AND YEAR(TO_DATE(order_year_month || '-01'))
-              IN ({year_filter.replace('YEAR(order_purchase_timestamp) IN ','').strip()})
+          AND YEAR(TO_DATE(order_year_month || '-01')) IN ({years})
         GROUP BY 1, 2, 3
         ORDER BY revenue DESC
     """, label="region")

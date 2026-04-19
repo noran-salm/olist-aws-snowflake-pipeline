@@ -1,0 +1,46 @@
+version: 0.2
+# CodeBuild spec — runs dbt after Glue ETL
+# Triggered by Lambda dbt_runner.py via Step Functions
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install dbt-snowflake==1.11.4 --quiet
+
+  pre_build:
+    commands:
+      - echo "Loading Snowflake credentials from Secrets Manager..."
+      - |
+        CREDS=$(aws secretsmanager get-secret-value \
+          --secret-id olist/snowflake/credentials \
+          --region us-east-1 \
+          --query SecretString --output text)
+      - export SNOWFLAKE_ACCOUNT=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['account'])")
+      - export SNOWFLAKE_USER=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['user'])")
+      - export SNOWFLAKE_PASSWORD=$(echo $CREDS | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")
+      - export DBT_PROFILES_DIR=$CODEBUILD_SRC_DIR/dbt_olist
+
+  build:
+    commands:
+      - cd dbt_olist
+      - echo "Running dbt..."
+      - dbt deps
+      - dbt run  --profiles-dir . --no-version-check
+      - dbt test --profiles-dir . --no-version-check
+
+  post_build:
+    commands:
+      - echo "dbt completed with status $CODEBUILD_BUILD_SUCCEEDING"
+      - |
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then
+          echo "✅ dbt run + test PASSED"
+        else
+          echo "❌ dbt FAILED — check CloudWatch logs"
+          aws sns publish \
+            --topic-arn arn:aws:sns:us-east-1:516671521715:olist-pipeline-alerts \
+            --subject "🚨 Olist dbt FAILED — Run ID: $RUN_ID" \
+            --message "dbt run or test failed. Check CodeBuild logs." \
+            --region us-east-1
+        fi
