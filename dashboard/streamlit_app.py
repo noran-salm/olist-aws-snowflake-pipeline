@@ -550,24 +550,64 @@ def render_delivery_page(years_csv: str):
     if df.empty:
         st.markdown('<div class="empty-state">No delivery data.</div>', unsafe_allow_html=True)
         return
-    st.markdown(f'<div class="insight-banner">{delivery_insight(df)}</div>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        fig_late = px.bar(df.sort_values("late_pct", ascending=True).tail(10),
-                          x="late_pct", y="customer_state", orientation="h",
-                          color="late_pct", color_continuous_scale="Reds",
-                          title="Late Rate by State")
-        fig_late = apply_dark_theme(fig_late)
-        st.plotly_chart(fig_late, use_container_width=True)
-    with col2:
-        fig_days = px.bar(df.sort_values("avg_days", ascending=True).tail(10),
-                          x="avg_days", y="customer_state", orientation="h",
-                          color="avg_days", color_continuous_scale="Blues",
-                          title="Avg Delivery Days by State")
-        fig_days = apply_dark_theme(fig_days)
-        st.plotly_chart(fig_days, use_container_width=True)
-    st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="delivery.csv", mime="text/csv")
 
+    st.markdown(f'<div class="insight-banner">{delivery_insight(df)}</div>', unsafe_allow_html=True)
+
+    # Create two subplots side by side
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Late Rate by State", "Avg Delivery Days by State"),
+        horizontal_spacing=0.12,
+        shared_yaxes=True,
+    )
+
+    # Late rate chart (top 10 highest late rates)
+    late_df = df.sort_values("late_pct", ascending=True).tail(10)
+    fig.add_trace(
+        go.Bar(
+            x=late_df["late_pct"],
+            y=late_df["customer_state"],
+            orientation="h",
+            marker=dict(color=late_df["late_pct"], colorscale="Reds", showscale=True, colorbar=dict(title="Late %", x=0.45)),
+            hovertemplate="<b>%{y}</b>: %{x:.1f}%<extra></extra>",
+            name="Late Rate",
+        ),
+        row=1, col=1
+    )
+
+    # Avg days chart (top 10 highest avg days)
+    days_df = df.sort_values("avg_days", ascending=True).tail(10)
+    fig.add_trace(
+        go.Bar(
+            x=days_df["avg_days"],
+            y=days_df["customer_state"],
+            orientation="h",
+            marker=dict(color=days_df["avg_days"], colorscale="Blues", showscale=True, colorbar=dict(title="Days", x=1.0)),
+            hovertemplate="<b>%{y}</b>: %{x:.1f} days<extra></extra>",
+            name="Avg Days",
+        ),
+        row=1, col=2
+    )
+
+    # Update layout for dark theme
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", size=12, color="#e2e8f0"),
+        hoverlabel=dict(bgcolor="#1e293b", font_size=11, font_color="#f1f5f9"),
+        margin=dict(l=10, r=10, t=60, b=10),
+        height=500,
+        showlegend=False,
+        title=None,
+    )
+    # Ensure y-axes are visible and share labels
+    fig.update_yaxes(title_text="", tickfont=dict(size=10))
+    fig.update_xaxes(title_text="Late Rate (%)", row=1, col=1, gridcolor="#334155")
+    fig.update_xaxes(title_text="Avg Delivery Days", row=1, col=2, gridcolor="#334155")
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="delivery.csv", mime="text/csv")
 # ---------- Sidebar ----------
 def render_sidebar() -> Dict[str, Any]:
     with st.sidebar:
