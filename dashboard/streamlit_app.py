@@ -1,13 +1,13 @@
 """
-dashboard/streamlit_app.py — Olist Analytics (SaaS Grade)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Features:
-- Sidebar navigation (no tabs)
-- Insight engine (AI-like summaries)
-- KPI cards with trend indicators (MoM)
-- Map (scatter mapbox) for state revenue
+dashboard/streamlit_app.py — Olist Analytics (Dark Mode, SaaS Grade)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Fully optimized dark theme dashboard with:
+- Consistent dark background (#0f172a)
+- Card-based layout with subtle borders
+- Insight engine (dynamic summaries)
+- Map visualization (scatter mapbox)
 - Lazy loading per page
-- Clean, modular structure
+- Modular components
 """
 import os
 import json
@@ -38,68 +38,160 @@ st.set_page_config(
     },
 )
 
-# ---------- Custom CSS (modern, SaaS‑like) ----------
+# ---------- Custom CSS (Dark Mode, Modern SaaS) ----------
 st.markdown("""
 <style>
-    /* Global */
-    body { background-color: #f8fafc; font-family: 'Inter', system-ui, sans-serif; }
-    /* KPI cards */
+    /* Global dark theme */
+    html, body, [data-testid="stAppViewContainer"] {
+        background-color: #0f172a;
+        color: #e2e8f0;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #1e293b;
+        border-right: 1px solid #334155;
+    }
+    [data-testid="stSidebar"] .stMarkdown, 
+    [data-testid="stSidebar"] .stRadio label {
+        color: #cbd5e1;
+    }
+    /* Metric cards */
     .kpi-card {
-        background: white;
+        background: #1e293b;
         border-radius: 1rem;
         padding: 1.2rem 1rem;
-        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
         transition: transform 0.2s, box-shadow 0.2s;
-        border: 1px solid #e2e8f0;
+        border: 1px solid #334155;
         text-align: center;
     }
-    .kpi-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1); }
-    .kpi-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #475569; }
-    .kpi-value { font-size: 1.8rem; font-weight: 700; color: #0f172a; margin: 0.25rem 0; }
-    .kpi-delta { font-size: 0.8rem; font-weight: 500; }
+    .kpi-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+        border-color: #f97316;
+    }
+    .kpi-label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #94a3b8;
+    }
+    .kpi-value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #f1f5f9;
+        margin: 0.25rem 0;
+    }
     /* Section headers */
     .section-header {
         font-size: 1rem;
         font-weight: 600;
-        color: #1e293b;
+        color: #f1f5f9;
         margin: 1.5rem 0 0.75rem;
         padding-bottom: 0.4rem;
-        border-bottom: 2px solid #e2e8f0;
-    }
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: white;
-        border-right: 1px solid #e2e8f0;
-        padding: 1rem;
+        border-bottom: 2px solid #334155;
     }
     /* Insight banner */
     .insight-banner {
-        background: #fef9c3;
+        background: #2d3a4e;
         border-left: 4px solid #f97316;
         padding: 0.75rem 1rem;
         border-radius: 0.5rem;
         margin: 0.5rem 0;
         font-size: 0.9rem;
-        color: #1e293b;
+        color: #e2e8f0;
     }
     /* Empty state */
     .empty-state {
-        background: #f1f5f9;
+        background: #1e293b;
         border-radius: 0.75rem;
         padding: 2rem;
         text-align: center;
-        color: #64748b;
+        color: #94a3b8;
+        border: 1px dashed #475569;
+    }
+    /* Buttons */
+    .stButton button {
+        background-color: #f97316;
+        color: white;
+        border-radius: 0.5rem;
+        font-weight: 500;
+        border: none;
+        transition: background-color 0.2s;
+    }
+    .stButton button:hover {
+        background-color: #ea580c;
+    }
+    /* Download buttons */
+    .stDownloadButton button {
+        background-color: #334155;
+        color: #e2e8f0;
+        border: 1px solid #475569;
+    }
+    .stDownloadButton button:hover {
+        background-color: #475569;
+    }
+    /* Dataframe tables */
+    .stDataFrame {
+        background-color: #1e293b;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        border: 1px solid #334155;
+    }
+    /* Select boxes, multiselect */
+    .stSelectbox div[data-baseweb="select"], 
+    .stMultiSelect div[data-baseweb="select"] {
+        background-color: #1e293b;
+        border-color: #475569;
+    }
+    /* Radio buttons */
+    .stRadio label {
+        color: #cbd5e1;
     }
     /* Footer */
-    footer { visibility: hidden; }
+    footer {
+        visibility: hidden;
+    }
+    /* Captions */
+    .stCaption {
+        color: #94a3b8;
+    }
+    /* Success/Warning/Info */
+    .stAlert {
+        background-color: #2d3a4e;
+        border: 1px solid #475569;
+    }
+    .stSuccess {
+        color: #10b981;
+    }
+    .stWarning {
+        color: #f59e0b;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------- Constants & Helpers ----------
+# Dark theme palette
+COLORS = {
+    "primary": "#f97316",    # orange
+    "secondary": "#10b981",  # green
+    "tertiary": "#3b82f6",   # blue
+    "warning": "#f59e0b",    # amber
+    "danger": "#ef4444",      # red
+    "gray": {
+        300: "#cbd5e1",
+        500: "#64748b",
+        700: "#334155",
+        800: "#1e293b",
+        900: "#0f172a",
+    }
+}
 PALETTE = ["#f97316", "#10b981", "#3b82f6", "#8b5cf6", "#f59e0b", "#ec4899", "#14b8a6", "#64748b"]
 STATUS_COLOR = {
     "delivered": "#10b981", "shipped": "#3b82f6", "processing": "#f59e0b",
-    "canceled": "#ef4444", "unavailable": "#9ca3af", "invoiced": "#8b5cf6",
+    "canceled": "#ef4444", "unavailable": "#64748b", "invoiced": "#8b5cf6",
     "approved": "#14b8a6", "created": "#f97316",
 }
 TIER_ICON = {"platinum": "🥇 Platinum", "gold": "🥈 Gold", "silver": "🥉 Silver", "bronze": "🔵 Bronze"}
@@ -135,6 +227,21 @@ def years_to_sql(years: List[int]) -> str:
 def compute_delta(current: float, previous: float) -> Optional[float]:
     if previous == 0 or pd.isna(previous): return None
     return ((current - previous) / previous) * 100
+
+# ---------- Plotly dark theme helper ----------
+def apply_dark_theme(fig):
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", size=12, color="#e2e8f0"),
+        hoverlabel=dict(bgcolor="#1e293b", font_size=11, font_color="#f1f5f9"),
+        xaxis=dict(showgrid=False, zeroline=False, tickangle=-30),
+        yaxis=dict(showgrid=True, gridcolor="#334155", zeroline=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10, r=10, t=40, b=10),
+    )
+    return fig
 
 # ---------- Credentials & Connection ----------
 @st.cache_resource(show_spinner=False)
@@ -320,13 +427,11 @@ def delivery_insight(df: pd.DataFrame) -> str:
     return f"⚠️ Highest late rate: **{worst['customer_state']}** ({worst['late_pct']:.1f}% late)."
 
 # ---------- UI Components ----------
-def render_kpi_row(df: pd.DataFrame, prev_df: pd.DataFrame = None):
+def render_kpi_row(df: pd.DataFrame):
     if df.empty:
         st.markdown('<div class="empty-state">No KPI data for selected filters.</div>', unsafe_allow_html=True)
         return
     r = df.iloc[0]
-    # For deltas we need previous period data – simplified: we compute MoM from monthly revenue
-    # For simplicity, we'll show only current values without deltas here (can be added later)
     cols = st.columns(4)
     metrics = [
         ("Total Orders", fmt_num(r["total_orders"])),
@@ -360,19 +465,17 @@ def render_revenue_page(years_csv: str):
     if df.empty:
         st.markdown('<div class="empty-state">No revenue data for selected years.</div>', unsafe_allow_html=True)
         return
-    # Insight
     st.markdown(f'<div class="insight-banner">{revenue_insight(df)}</div>', unsafe_allow_html=True)
-    # Chart
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=df["order_year_month"], y=df["revenue"], name="Revenue (BRL)",
-                         marker_color="#f97316", opacity=0.8), secondary_y=False)
+                         marker_color=COLORS["primary"], opacity=0.8), secondary_y=False)
     fig.add_trace(go.Scatter(x=df["order_year_month"], y=df["orders"], name="Orders",
-                             mode="lines+markers", line=dict(color="#3b82f6", width=2)), secondary_y=True)
-    fig.update_layout(height=400, margin=dict(l=10, r=10, t=40, b=10), hovermode="x unified")
+                             mode="lines+markers", line=dict(color=COLORS["tertiary"], width=2)), secondary_y=True)
+    fig = apply_dark_theme(fig)
+    fig.update_layout(height=400)
     fig.update_yaxes(title_text="Revenue (BRL)", tickformat=",.0f", secondary_y=False)
     fig.update_yaxes(title_text="Orders", secondary_y=True)
     st.plotly_chart(fig, use_container_width=True)
-    # Download
     st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="monthly_revenue.csv", mime="text/csv")
 
 def render_categories_page(years_csv: str, top_n: int):
@@ -385,7 +488,8 @@ def render_categories_page(years_csv: str, top_n: int):
     fig = px.bar(df, x="revenue", y="category", orientation="h", color="avg_review",
                  color_continuous_scale="RdYlGn", range_color=[3,5],
                  labels={"revenue":"Revenue (BRL)","category":"","avg_review":"Avg Review"})
-    fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0))
+    fig = apply_dark_theme(fig)
+    fig.update_layout(height=500)
     st.plotly_chart(fig, use_container_width=True)
     st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="top_categories.csv", mime="text/csv")
 
@@ -396,7 +500,7 @@ def render_geography_page(years_csv: str):
         st.markdown('<div class="empty-state">No geography data.</div>', unsafe_allow_html=True)
         return
     st.markdown(f'<div class="insight-banner">{region_insight(df)}</div>', unsafe_allow_html=True)
-    # Map (scatter mapbox)
+    # Map
     df_map = df.copy()
     df_map["lat"] = df_map["state_code"].map(lambda x: STATE_COORDS.get(x, (None, None))[0])
     df_map["lon"] = df_map["state_code"].map(lambda x: STATE_COORDS.get(x, (None, None))[1])
@@ -405,12 +509,14 @@ def render_geography_page(years_csv: str):
         fig_map = px.scatter_mapbox(df_map, lat="lat", lon="lon", size="revenue", color="revenue",
                                     hover_name="state_name", zoom=3, height=500,
                                     color_continuous_scale="Oranges", size_max=50)
-        fig_map.update_layout(mapbox_style="carto-positron", margin=dict(l=0, r=0, t=30, b=0))
+        fig_map.update_layout(mapbox_style="carto-darkmatter", margin=dict(l=0, r=0, t=30, b=0))
+        fig_map = apply_dark_theme(fig_map)
         st.plotly_chart(fig_map, use_container_width=True)
-    # Bar chart by state
+    # Bar chart
     st.markdown('<p class="section-header">Revenue by State</p>', unsafe_allow_html=True)
     fig_bar = px.bar(df.sort_values("revenue", ascending=False).head(15),
                      x="state_name", y="revenue", color="region", title="Top 15 States")
+    fig_bar = apply_dark_theme(fig_bar)
     fig_bar.update_layout(xaxis_tickangle=-45, height=400)
     st.plotly_chart(fig_bar, use_container_width=True)
     st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="geography.csv", mime="text/csv")
@@ -422,12 +528,10 @@ def render_sellers_page(years_csv: str):
         st.markdown('<div class="empty-state">No seller data.</div>', unsafe_allow_html=True)
         return
     st.markdown(f'<div class="insight-banner">🥇 Top seller: **{df.iloc[0]["seller_id"]}** with {fmt_brl(df.iloc[0]["gmv"])}</div>', unsafe_allow_html=True)
-    # Tier filter
     tiers = ["All"] + sorted(df["tier"].dropna().unique().tolist())
     sel_tier = st.selectbox("Filter by tier", tiers)
     if sel_tier != "All":
         df = df[df["tier"] == sel_tier]
-    # Table
     display = df.copy()
     display["tier"] = display["tier"].map(lambda t: TIER_ICON.get(t, t))
     display["gmv"] = display["gmv"].apply(fmt_brl)
@@ -447,19 +551,20 @@ def render_delivery_page(years_csv: str):
         st.markdown('<div class="empty-state">No delivery data.</div>', unsafe_allow_html=True)
         return
     st.markdown(f'<div class="insight-banner">{delivery_insight(df)}</div>', unsafe_allow_html=True)
-    # Two charts
     col1, col2 = st.columns(2)
     with col1:
         fig_late = px.bar(df.sort_values("late_pct", ascending=True).tail(10),
                           x="late_pct", y="customer_state", orientation="h",
                           color="late_pct", color_continuous_scale="Reds",
                           title="Late Rate by State")
+        fig_late = apply_dark_theme(fig_late)
         st.plotly_chart(fig_late, use_container_width=True)
     with col2:
         fig_days = px.bar(df.sort_values("avg_days", ascending=True).tail(10),
                           x="avg_days", y="customer_state", orientation="h",
                           color="avg_days", color_continuous_scale="Blues",
                           title="Avg Delivery Days by State")
+        fig_days = apply_dark_theme(fig_days)
         st.plotly_chart(fig_days, use_container_width=True)
     st.download_button("⬇️ Download CSV", data=df.to_csv(index=False), file_name="delivery.csv", mime="text/csv")
 
@@ -468,7 +573,6 @@ def render_sidebar() -> Dict[str, Any]:
     with st.sidebar:
         st.markdown("### 🛒 Olist Analytics")
         st.divider()
-        # Navigation
         page = st.radio("Navigation", [
             "📈 Revenue", "🏆 Categories", "🗺️ Geography", "🥇 Sellers", "🚚 Delivery"
         ], index=0)
@@ -495,17 +599,14 @@ def render_sidebar() -> Dict[str, Any]:
 # ---------- Main ----------
 def main():
     filters = render_sidebar()
-    # Header & freshness (shared)
     with st.spinner("Checking freshness..."):
         ts = load_freshness()
     render_header(ts)
     st.divider()
-    # KPIs (shared)
     with st.spinner("Loading KPIs..."):
         kpi_df = load_kpis(filters["years_csv"])
     render_kpi_row(kpi_df)
     st.divider()
-    # Render selected page
     if filters["page"] == "📈 Revenue":
         render_revenue_page(filters["years_csv"])
     elif filters["page"] == "🏆 Categories":
@@ -516,7 +617,6 @@ def main():
         render_sellers_page(filters["years_csv"])
     elif filters["page"] == "🚚 Delivery":
         render_delivery_page(filters["years_csv"])
-    # Footer
     st.divider()
     st.caption(f"© Olist Analytics · Refreshed: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
