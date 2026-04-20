@@ -27,6 +27,8 @@ It ingests raw Brazilian e-commerce data, applies medallion architecture transfo
 
 ## Architecture Overview
 
+![Architecture Diagram](docs/olist_reference_style_arch.jpg)
+
 The pipeline implements a **medallion architecture** (RAW → STAGING → MARTS) across five logical layers:
 
 | Layer          | Purpose                              | Tools                                      |
