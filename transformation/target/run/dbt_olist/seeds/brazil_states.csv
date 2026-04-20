@@ -1,0 +1,14 @@
+
+    
+    
+    
+    create table OLIST_DW.MARTS.brazil_states (state_code varchar,state_name varchar,region varchar)
+  ;
+    -- dbt seed --
+    
+            insert into OLIST_DW.MARTS.brazil_states (state_code, state_name, region) values
+            (%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s),(%s,%s,%s)
+        
+
+;
+  
