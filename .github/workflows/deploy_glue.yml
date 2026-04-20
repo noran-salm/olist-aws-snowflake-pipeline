@@ -34,7 +34,7 @@ jobs:
 
       - name: Deploy orchestrator Lambda
         run: |
-          cd lambda_function
+          cd ingestion
           zip -j orchestrator.zip pipeline_orchestrator.py
           unzip -l orchestrator.zip
           aws lambda update-function-code \
