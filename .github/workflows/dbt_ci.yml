@@ -4,12 +4,12 @@ on:
   push:
     branches: [main, develop]
     paths:
-      - 'dbt_olist/**'
+      - 'transformation/**'
       - '.github/workflows/dbt_ci.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'dbt_olist/**'
+      - 'transformation/**'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -34,7 +34,7 @@ jobs:
 
       - name: Write profiles.yml
         run: |
-          cat > dbt_olist/profiles.yml << PROFILE
+          cat > transformation/profiles.yml << PROFILE
           dbt_olist:
             target: ci
             outputs:
@@ -53,19 +53,19 @@ jobs:
           PROFILE
 
       - name: dbt debug
-        working-directory: dbt_olist
+        working-directory: transformation
         env:
           DBT_PROFILES_DIR: .
         run: dbt debug
 
       - name: dbt compile
-        working-directory: dbt_olist
+        working-directory: transformation
         env:
           DBT_PROFILES_DIR: .
         run: dbt compile
 
       - name: dbt test (sources + staging)
-        working-directory: dbt_olist
+        working-directory: transformation
         env:
           DBT_PROFILES_DIR: .
         run: dbt test --select source:olist_raw staging
@@ -75,5 +75,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dbt-logs
-          path: dbt_olist/logs/
+          path: transformation/logs/
           retention-days: 7

@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'glue_jobs/olist_etl_script.py'
-      - 'lambda_function/pipeline_orchestrator.py'
+      - 'processing/olist_etl_script.py'
+      - 'ingestion/pipeline_orchestrator.py'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -23,11 +23,11 @@ jobs:
           aws-region:            ${{ secrets.AWS_REGION }}
 
       - name: Validate Glue script syntax
-        run: python3 -m py_compile glue_jobs/olist_etl_script.py && echo "Syntax OK"
+        run: python3 -m py_compile processing/olist_etl_script.py && echo "Syntax OK"
 
       - name: Deploy Glue script to S3
         run: |
-          aws s3 cp glue_jobs/olist_etl_script.py \
+          aws s3 cp processing/olist_etl_script.py \
             s3://olist-lake-516671521715/scripts/olist_etl_script.py \
             --sse AES256
           echo "Glue script deployed"
