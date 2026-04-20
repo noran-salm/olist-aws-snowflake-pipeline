@@ -155,19 +155,24 @@ State is stored locally by default — **highly recommended** to switch to a rem
 ### Deploy
 ```bash
 cd terraform
+```
 
 # First time
+```bash
 terraform init
-
+```
 # Preview changes
+```bash
 terraform plan \
   -var="snowflake_aws_role_arn=arn:aws:iam::ACCOUNT:user/snow-s3-..." \
   -var="alert_email=your@email.com"
-
+```
 # Apply
+```bash
 terraform apply \
   -var="snowflake_aws_role_arn=arn:aws:iam::ACCOUNT:user/snow-s3-..." \
   -var="alert_email=your@email.com"
+```
 
 ### Remote State (Recommended for Teams)
 
@@ -183,7 +188,8 @@ terraform {
     encrypt        = true
   }
 }
-  
+```
+
 ## Pipeline Flow
 
 Fully automated **daily run at 02:00 UTC** (≈8 minutes end-to-end).
@@ -283,12 +289,14 @@ AWS CLI v2, Terraform 1.5, Python 3.12, Snowflake account, Docker, Kaggle CLI.
 git clone https://github.com/noran-salm/olist-aws-snowflake-pipeline.git
 cd olist-aws-snowflake-pipeline
 cp .env.example .env
+```
 
 ### 2. Provision AWS Infrastructure
 ```bash
 cd terraform
 terraform init
 terraform apply -var="alert_email=your@email.com"
+```
 
 ### 3. Configure Snowflake
 
@@ -297,7 +305,7 @@ Execute the SQL scripts in the `warehouse/` folder **in order** (01 → 07) insi
 After running `01_create_storage_integration.sql`, execute:
 ```sql
 DESC INTEGRATION olist_s3_integration;
-
+```
 - `TF_VAR_snowflake_aws_role_arn`
 - `TF_VAR_snowflake_external_id`
 
@@ -316,13 +324,13 @@ aws secretsmanager create-secret \
     "warehouse": "OLIST_WH",
     "schema": "MARTS"
   }'
+```
 
 ### 5. Upload the Dataset to S3
 ```bash
 kaggle datasets download -d olistbr/brazilian-ecommerce --unzip -p /tmp/olist/
 aws s3 sync /tmp/olist/ s3://olist-lake-$(aws sts get-caller-identity --query Account --output text)/raw/ --sse AES256
-
-# Olist Data Pipeline
+```
 
 ## 6. Add GitHub Secrets
 
@@ -341,6 +349,7 @@ Go to **Repository Settings → Secrets and variables → Actions** and add the 
 ```bash
 SF_ARN=$(aws stepfunctions list-state-machines --query 'stateMachines[?name==`olist-data-pipeline`].stateMachineArn' --output text)
 aws stepfunctions start-execution --state-machine-arn $SF_ARN --input '{}'
+```
 
 From AWS Console:
 
@@ -354,6 +363,7 @@ From AWS Console:
 source .venv/bin/activate
 eval $(python3 scripts/get_secret.py)
 cd transformation && dbt run && dbt test
+```
 
 ## Cost Estimate (Monthly)
 
