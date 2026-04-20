@@ -68,7 +68,7 @@ def write_parquet(df: DataFrame, name: str,
     print(f"[INFO] Written ({mode}) → {path}")
 
 
-# ── Load sources ──────────────────────────────────────────────
+# ──  Load sources ──────────────────────────────────────────────
 orders_df      = clean(read_csv("olist_orders_dataset.csv"))
 order_items_df = clean(read_csv("olist_order_items_dataset.csv"))
 customers_df   = clean(read_csv("olist_customers_dataset.csv"))
