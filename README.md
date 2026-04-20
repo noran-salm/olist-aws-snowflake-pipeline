@@ -19,7 +19,6 @@ It ingests raw Brazilian e-commerce data, applies medallion architecture transfo
 [![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white&style=for-the-badge)](https://getdbt.com)
 [![Terraform](https://img.shields.io/badge/Terraform-7B42BC?logo=terraform&logoColor=white&style=for-the-badge)](https://terraform.io)
 [![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white&style=for-the-badge)](https://python.org)
-[![PySpark](https://img.shields.io/badge/PySpark-E25A1C?logo=apachespark&logoColor=white&style=for-the-badge)](https://spark.apache.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white&style=for-the-badge)](https://streamlit.io)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://docker.com)
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=github-actions&logoColor=white&style=for-the-badge)](https://github.com/features/actions)
@@ -132,6 +131,7 @@ olist-aws-snowflake-pipeline/
 ├── .gitignore
 └── README.md
 
+```
 ## Infrastructure (Terraform)
 
 All AWS resources are defined as code in the `terraform/` directory.  
