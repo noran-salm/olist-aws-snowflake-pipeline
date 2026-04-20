@@ -1,196 +1,100 @@
 {
-  "Comment": "Olist Pipeline v2 — hardened with retries, idempotency, validation",
-  "StartAt": "GenerateRunId",
-
+  "Comment": "Olist Pipeline v3 — works with empty input from UI or CLI",
+  "StartAt": "InitRun",
   "States": {
 
-    "GenerateRunId": {
+    "InitRun": {
       "Type": "Pass",
       "Parameters": {
-        "run_id.$":        "States.Format('run-{}-{}', $$.Execution.Name, States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 0))",
-        "triggered_by.$":  "$.triggered_by",
-        "started_at.$":    "$$.Execution.StartTime"
+        "run_id.$":      "States.Format('run-{}', $$.Execution.Name)",
+        "triggered_by":  "eventbridge-or-manual",
+        "started_at.$":  "$$.Execution.StartTime"
       },
+      "ResultPath": "$",
       "Next": "ValidateRawData"
     },
 
     "ValidateRawData": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-data-validator",
-      "Parameters": {
-        "action":  "validate_s3",
-        "run_id.$":"$.run_id"
-      },
+      "Parameters": {"run_id.$": "$.run_id"},
       "ResultPath": "$.validation",
-      "Retry": [{
-        "ErrorEquals":     ["Lambda.ServiceException","Lambda.TooManyRequestsException"],
-        "IntervalSeconds": 10,
-        "MaxAttempts":     2,
-        "BackoffRate":     2.0
-      }],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "ValidationFailed",
-        "ResultPath":  "$.validation_error"
-      }],
+      "Retry": [{"ErrorEquals": ["Lambda.ServiceException","Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 10, "MaxAttempts": 2, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "StartCrawler"
-    },
-
-    "ValidationFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sns:publish",
-      "Parameters": {
-        "TopicArn": "arn:aws:sns:us-east-1:516671521715:olist-pipeline-alerts",
-        "Subject":  "🚨 Olist Pipeline: Data Validation FAILED",
-        "Message.$":"States.Format('Run {} failed validation. Error: {}', $.run_id, $.validation_error.Cause)"
-      },
-      "Next": "PipelineFailed"
     },
 
     "StartCrawler": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
-      "Parameters": {
-        "action":  "start_crawler",
-        "run_id.$":"$.run_id"
-      },
+      "Parameters": {"action": "start_crawler", "run_id.$": "$.run_id"},
       "ResultPath": "$.crawler_start",
-      "Retry": [
-        {
-          "ErrorEquals":     ["States.TaskFailed"],
-          "IntervalSeconds": 30,
-          "MaxAttempts":     3,
-          "BackoffRate":     2.0,
-          "JitterStrategy":  "FULL"
-        },
-        {
-          "ErrorEquals":     ["Lambda.ServiceException"],
-          "IntervalSeconds": 10,
-          "MaxAttempts":     3,
-          "BackoffRate":     1.5
-        }
-      ],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "NotifyAndFail",
-        "ResultPath":  "$.error"
-      }],
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 30, "MaxAttempts": 3, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "WaitForCrawler"
     },
 
-    "WaitForCrawler": {
-      "Type":    "Wait",
-      "Seconds": 30,
-      "Next":    "CheckCrawler"
-    },
+    "WaitForCrawler": {"Type": "Wait", "Seconds": 30, "Next": "CheckCrawler"},
 
     "CheckCrawler": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
-      "Parameters": {
-        "action":  "check_crawler",
-        "run_id.$":"$.run_id"
-      },
+      "Parameters": {"action": "check_crawler", "run_id.$": "$.run_id"},
       "ResultPath": "$.crawler_status",
-      "Retry": [{
-        "ErrorEquals":     ["Lambda.ServiceException"],
-        "IntervalSeconds": 15,
-        "MaxAttempts":     3,
-        "BackoffRate":     2.0
-      }],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "NotifyAndFail",
-        "ResultPath":  "$.error"
-      }],
+      "Retry": [{"ErrorEquals": ["Lambda.ServiceException"],
+        "IntervalSeconds": 15, "MaxAttempts": 3, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "IsCrawlerDone"
     },
 
     "IsCrawlerDone": {
       "Type": "Choice",
-      "Choices": [{
-        "Variable":     "$.crawler_status.status",
-        "StringEquals": "READY",
-        "Next":         "StartETL"
-      }],
+      "Choices": [{"Variable": "$.crawler_status.status", "StringEquals": "READY", "Next": "StartETL"}],
       "Default": "WaitForCrawler"
     },
 
     "StartETL": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
-      "Parameters": {
-        "action":  "start_etl",
-        "run_id.$":"$.run_id"
-      },
+      "Parameters": {"action": "start_etl", "run_id.$": "$.run_id"},
       "ResultPath": "$.etl_start",
-      "Retry": [{
-        "ErrorEquals":     ["States.TaskFailed"],
-        "IntervalSeconds": 60,
-        "MaxAttempts":     2,
-        "BackoffRate":     2.0,
-        "JitterStrategy":  "FULL"
-      }],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "NotifyAndFail",
-        "ResultPath":  "$.error"
-      }],
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"],
+        "IntervalSeconds": 60, "MaxAttempts": 2, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "WaitForETL"
     },
 
-    "WaitForETL": {
-      "Type":    "Wait",
-      "Seconds": 60,
-      "Next":    "CheckETL"
-    },
+    "WaitForETL": {"Type": "Wait", "Seconds": 60, "Next": "CheckETL"},
 
     "CheckETL": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
       "Parameters": {
-        "action":       "check_etl",
-        "run_id.$":     "$.run_id",
+        "action": "check_etl",
+        "run_id.$": "$.run_id",
         "job_run_id.$": "$.etl_start.job_run_id"
       },
       "ResultPath": "$.etl_status",
-      "Retry": [{
-        "ErrorEquals":     ["Lambda.ServiceException"],
-        "IntervalSeconds": 15,
-        "MaxAttempts":     3,
-        "BackoffRate":     2.0
-      }],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "NotifyAndFail",
-        "ResultPath":  "$.error"
-      }],
+      "Retry": [{"ErrorEquals": ["Lambda.ServiceException"],
+        "IntervalSeconds": 15, "MaxAttempts": 3, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "IsETLDone"
     },
 
     "IsETLDone": {
       "Type": "Choice",
-      "Choices": [{
-        "Variable":     "$.etl_status.status",
-        "StringEquals": "SUCCEEDED",
-        "Next":         "ValidateProcessed"
-      }],
+      "Choices": [{"Variable": "$.etl_status.status", "StringEquals": "SUCCEEDED", "Next": "ValidateProcessed"}],
       "Default": "WaitForETL"
     },
 
     "ValidateProcessed": {
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-1:516671521715:function:olist-pipeline-orchestrator",
-      "Parameters": {
-        "action":  "validate_s3",
-        "run_id.$":"$.run_id"
-      },
+      "Parameters": {"action": "validate_s3", "run_id.$": "$.run_id"},
       "ResultPath": "$.s3_validation",
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "Next":        "NotifyAndFail",
-        "ResultPath":  "$.error"
-      }],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyAndFail", "ResultPath": "$.error"}],
       "Next": "PipelineSucceeded"
     },
 
@@ -199,20 +103,13 @@
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "arn:aws:sns:us-east-1:516671521715:olist-pipeline-alerts",
-        "Subject":  "🚨 Olist Pipeline FAILED",
-        "Message.$":"States.Format('Pipeline run {} failed. Error: {}', $.run_id, $.error.Cause)"
+        "Subject":  "Olist Pipeline FAILED",
+        "Message.$": "States.Format('Run {} failed. Error: {}', $.run_id, $.error.Cause)"
       },
       "Next": "PipelineFailed"
     },
 
-    "PipelineSucceeded": {
-      "Type": "Succeed"
-    },
-
-    "PipelineFailed": {
-      "Type":  "Fail",
-      "Error": "PipelineError",
-      "Cause": "Pipeline failed — check SNS alert and CloudWatch logs"
-    }
+    "PipelineSucceeded": {"Type": "Succeed"},
+    "PipelineFailed": {"Type": "Fail", "Error": "PipelineError", "Cause": "Check SNS + CloudWatch"}
   }
 }
