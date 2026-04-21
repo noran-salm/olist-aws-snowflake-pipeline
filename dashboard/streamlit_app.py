@@ -284,27 +284,33 @@ def get_connection():
         client_session_keep_alive=True
     )
 
-@st.cache_data(ttl=600, show_spinner=False)
 def run_query(sql: str, label: str = "") -> pd.DataFrame:
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute(sql)
-
         df = cur.fetch_pandas_all()
         df.columns = [c.lower() for c in df.columns]
-
         return df
 
     except Exception as e:
+        if "390114" in str(e):
+            log.warning("Session expired. Reconnecting...")
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(sql)
+            df = cur.fetch_pandas_all()
+            df.columns = [c.lower() for c in df.columns]
+            return df
+
         log.error("Query failed [%s]: %s", label, e)
         st.error(f"Query error ({label}): {e}")
         return pd.DataFrame()
 
     finally:
         if conn:
-            conn.close()   # ⭐ مهم جدًا
+            conn.close()
 
 # ---------- Data Loading (cached, per page) ----------
 @st.cache_data(ttl=600, show_spinner=False)
