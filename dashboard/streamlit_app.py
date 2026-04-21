@@ -1,13 +1,7 @@
 """
 dashboard/streamlit_app.py — Olist Analytics (Dark Mode, SaaS Grade)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Fully optimized dark theme dashboard with:
-- Consistent dark background (#0f172a)
-- Card-based layout with subtle borders
-- Insight engine (dynamic summaries)
-- Map visualization (scatter mapbox)
-- Lazy loading per page
-- Modular components
+
 """
 import os
 import json
@@ -268,28 +262,49 @@ def _get_credentials() -> dict:
         }
     raise RuntimeError("No Snowflake credentials found.")
 
-@st.cache_resource(show_spinner=False)
+# def get_connection():
+#     creds = _get_credentials()
+#     return snowflake.connector.connect(
+#         account=creds["account"], user=creds["user"], password=creds["password"],
+#         role=creds.get("role", "SYSADMIN"), database=creds.get("database", "OLIST_DW"),
+#         schema=creds.get("schema", "MARTS"), warehouse=creds.get("warehouse", "OLIST_WH"),
+#         session_parameters={"QUERY_TAG": "streamlit-dashboard"},
+#     )
+
 def get_connection():
     creds = _get_credentials()
     return snowflake.connector.connect(
-        account=creds["account"], user=creds["user"], password=creds["password"],
-        role=creds.get("role", "SYSADMIN"), database=creds.get("database", "OLIST_DW"),
-        schema=creds.get("schema", "MARTS"), warehouse=creds.get("warehouse", "OLIST_WH"),
-        session_parameters={"QUERY_TAG": "streamlit-dashboard"},
+        account=creds["account"],
+        user=creds["user"],
+        password=creds["password"],
+        role=creds.get("role", "SYSADMIN"),
+        database=creds.get("database"),
+        schema=creds.get("schema"),
+        warehouse=creds.get("warehouse"),
+        client_session_keep_alive=True
     )
 
 @st.cache_data(ttl=600, show_spinner=False)
 def run_query(sql: str, label: str = "") -> pd.DataFrame:
+    conn = None
     try:
-        cur = get_connection().cursor()
+        conn = get_connection()
+        cur = conn.cursor()
         cur.execute(sql)
+
         df = cur.fetch_pandas_all()
         df.columns = [c.lower() for c in df.columns]
+
         return df
+
     except Exception as e:
         log.error("Query failed [%s]: %s", label, e)
         st.error(f"Query error ({label}): {e}")
         return pd.DataFrame()
+
+    finally:
+        if conn:
+            conn.close()   # ⭐ مهم جدًا
 
 # ---------- Data Loading (cached, per page) ----------
 @st.cache_data(ttl=600, show_spinner=False)
