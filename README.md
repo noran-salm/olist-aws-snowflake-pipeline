@@ -36,34 +36,9 @@ A production-grade, end-to-end data engineering pipeline that ingests raw Brazil
 
 ---
 
-## Architecture
+## Architecture 
 
-```
-
-![Architecture Diagram](docs/olist_reference_style_arch.jpg)
-
-EventBridge (02:00 UTC)
-        │
-        ▼
-AWS Step Functions ──────────────────────────────────────────────┐
-  │ InitRun → ValidateRawData → StartCrawler → StartETL          │
-  │ → CheckETL → ValidateProcessed → [SUCCEEDED]                 │ On Failure
-  │                                                               ▼
-  │                                                         SNS Alert + DLQ
-  ▼
-S3 /raw/ (9 CSVs) → Glue Crawler → Glue ETL (PySpark) → S3 /processed/ (Parquet)
-                                                                  │
-                                                          COPY INTO (IAM + Secrets)
-                                                                  │
-                                                       Snowflake OLIST_DW
-                                                     ┌────────────┴──────────────┐
-                                                   RAW         STAGING         MARTS
-                                                 (4 tables)   (4 views)    (5 tables)
-                                                                  │
-                                                            dbt run + dbt test (51)
-                                                                  │
-                                                        Streamlit Cloud Dashboard
-```
+![Architecture Diagram](docs/olist_reference_style_arch.png)
 
 The pipeline implements a **medallion architecture** (RAW → STAGING → MARTS) with three independent data quality gates, full orchestration via AWS Step Functions, and Infrastructure as Code via Terraform.
 
