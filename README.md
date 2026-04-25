@@ -222,7 +222,7 @@ olist-aws-snowflake-pipeline/
 │   ├── glue.tf                 # Glue Crawler + ETL job
 │   ├── monitoring.tf           # CloudWatch, SNS, SQS DLQ
 │   └── stepfunctions_definition.json
-├── ingestion/                  # Lambda source code
+├── ingestion/                    # Lambda source code
 │   ├── pipeline_orchestrator.py  # Step Functions action router
 │   ├── data_validator.py         # 28-check pre-ETL validator
 │   └── health_check.py
@@ -239,6 +239,9 @@ olist-aws-snowflake-pipeline/
 ├── dashboard/                  # Streamlit analytics app
 │   ├── streamlit_app.py
 │   └── Dockerfile
+├── docs/                       # diagrams and architecture visuals
+│   ├── olist_reference_style_arch.png
+│   ├── stepfunctions_graph.png
 ├── warehouse/                  # Snowflake setup scripts (run once, in order)
 │   ├── 01_create_storage_integration.sql
 │   └── ... (07 total)
