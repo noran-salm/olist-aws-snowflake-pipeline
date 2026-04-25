@@ -36,7 +36,7 @@ A production-grade, end-to-end data engineering pipeline that ingests raw Brazil
 
 ---
 
-## Architecture 
+## Architecture Diagram
 
 ![Architecture Diagram](docs/olist_reference_style_arch.png)
 
@@ -94,6 +94,17 @@ The pipeline runs automatically at **02:00 UTC daily** and completes in approxim
 | 10 | Streamlit Dashboard | Serves fresh MARTS data to business users |
 
 ---
+
+### Step Functions State Machine
+
+![Step Functions Workflow](docs/stepfunctions_graph.png)
+
+The state machine orchestrates the entire pipeline with 8 states, each configured with:
+- `Retry`: exponential backoff (max attempts 3, 5s → 30s → 2m)
+- `Catch`: routes failures to a `NotifyAndFail` state that publishes an SNS alert
+
+**State sequence:**  
+InitRun → ValidateRawData → StartCrawler → CheckCrawlerStatus → StartETL → CheckETLStatus → ValidateProcessed → SnowflakeCopy → dbtRun → dbtTest → NotifyAndFail
 
 ## Data Quality
 
