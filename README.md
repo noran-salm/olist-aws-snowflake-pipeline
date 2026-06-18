@@ -12,7 +12,7 @@
 
 A production-grade, end-to-end data engineering pipeline that ingests raw Brazilian e-commerce data from the [Olist public dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), applies medallion architecture transformations across a Snowflake data warehouse, enforces multi-stage data quality validation, and delivers business insights through a live Streamlit analytics dashboard — fully automated, monitored, tested, and provisioned with Terraform.
 
-**Live Dashboard →** [olist-aws-app-pipeline.streamlit.app](https://olist-aws-app-pipeline-nagr2optdeyqzxnrqzxhv3.streamlit.app)
+**Live Dashboard (Temporary Demo)→** [olist-aws-app-pipeline.streamlit.app](https://olist-aws-app-pipeline-nagr2optdeyqzxnrqzxhv3.streamlit.app)
 
 ---
 
